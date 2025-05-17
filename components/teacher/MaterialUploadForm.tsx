@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Upload, FileText, Loader2 } from "lucide-react"
+import { Upload, FileText, Loader2, AlertCircle } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface MaterialUploadFormProps {
   lessonId: string
@@ -92,6 +93,11 @@ export default function MaterialUploadForm({ lessonId, onSuccess }: MaterialUplo
     const selectedFile = e.target.files?.[0] || null
     console.log("File selected:", selectedFile)
     setFile(selectedFile)
+    
+    // Clear any previous errors when selecting a new file
+    if (selectedFile) {
+      setError(null)
+    }
   }
 
   return (
@@ -162,7 +168,12 @@ export default function MaterialUploadForm({ lessonId, onSuccess }: MaterialUplo
         </div>
       )}
 
-      {error && <div className="bg-red-50 text-red-600 p-3 rounded-md text-sm">{error}</div>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4 mr-2" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       <Button type="submit" className="w-full" disabled={isUploading}>
         {isUploading ? (

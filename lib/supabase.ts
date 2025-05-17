@@ -58,6 +58,7 @@ export type Material = {
   content_type: string
   content: string | null
   file_url: string | null
+  file_name: string | null
   ai_summary: string | null
   key_concepts: any | null
   created_at: string
