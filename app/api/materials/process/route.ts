@@ -2,6 +2,9 @@ import { type NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
+import { extractTextFromURL } from "@/lib/document-parser"
+
+export const runtime = "nodejs"
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,20 +28,32 @@ export async function POST(request: NextRequest) {
     // Extract content based on material type
     let contentToAnalyze = ""
     
-    if (material.content_type === "text") {
-      // Use the stored text content
-      contentToAnalyze = material.content || ""
-    } else if (material.file_url) {
-      // For files, we could implement file parsing here
-      // This would depend on file type (PDF, Word, etc.)
-      // For now, we'll use a placeholder message
-      contentToAnalyze = `[This is content from file: ${material.file_url}]`
-      
-      // TODO: Implement file content extraction
-      // Options:
-      // 1. For PDFs: Use a PDF parsing library or a dedicated API
-      // 2. For supported document types: Use a document parsing service
-      // 3. For images: Use OCR via AI vision models
+    if (material.content) {
+      // Use the content that's already in the database
+      contentToAnalyze = material.content
+      console.log(`Using existing content: ${contentToAnalyze.length} characters`)
+    } else if (material.file_url && material.file_name) {
+      try {
+        // Extract text from the file using our document parser
+        console.log(`Extracting text from file: ${material.file_name}`)
+        contentToAnalyze = await extractTextFromURL(material.file_url, material.file_name)
+        console.log(`Successfully extracted ${contentToAnalyze.length} characters of text`)
+        
+        // Save the extracted text to the database for future use
+        const { error: updateError } = await supabaseAdmin
+          .from("materials")
+          .update({
+            content: contentToAnalyze
+          })
+          .eq("id", materialId)
+        
+        if (updateError) {
+          console.error("Error saving extracted text:", updateError)
+        }
+      } catch (extractError) {
+        console.error("Error extracting text from file:", extractError)
+        contentToAnalyze = `[Unable to extract text from file: ${material.file_name}]`
+      }
     }
 
     if (!contentToAnalyze) {
@@ -47,7 +62,7 @@ export async function POST(request: NextRequest) {
 
     // Use AI to summarize the material and extract key concepts
     const { text: analysisJson } = await generateText({
-      model: openai("gpt-4o"),
+      model: openai("gpt-3.5-turbo"),
       prompt: `You are an education assistant tasked with analyzing learning materials.
       
       Analyze the following learning material about ${material.lessons?.topic || "the subject"} and create:

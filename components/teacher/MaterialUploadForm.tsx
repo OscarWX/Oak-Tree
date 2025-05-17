@@ -67,7 +67,22 @@ export default function MaterialUploadForm({ lessonId, onSuccess }: MaterialUplo
         body: formData,
       })
 
-      const data = await response.json()
+      // Safely parse response. If server returns HTML or plain text, avoid JSON parse error.
+      let data: any
+      const responseContentType = response.headers.get("content-type") || ""
+
+      if (responseContentType.includes("application/json")) {
+        data = await response.json()
+      } else {
+        const text = await response.text()
+        // Attempt to parse JSON if it looks like JSON, otherwise keep raw text
+        try {
+          data = JSON.parse(text)
+        } catch {
+          data = { error: text }
+        }
+      }
+
       console.log("Upload response:", data)
 
       if (!response.ok) {

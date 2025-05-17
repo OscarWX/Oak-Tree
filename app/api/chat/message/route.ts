@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
 
     // Generate AI response
     const { text: aiResponse } = await generateText({
-      model: openai("gpt-4o"),
+      model: openai("gpt-3.5-turbo"),
       system: `You are Oakie, an AI study buddy designed to help students learn by encouraging them to teach concepts back to you.
       
       Your role is to:

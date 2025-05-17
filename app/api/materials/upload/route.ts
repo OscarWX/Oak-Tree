@@ -1,5 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { extractTextFromFile } from "@/lib/document-parser"
+import { generateText } from "ai"
+import { openai } from "@ai-sdk/openai"
+
+export const runtime = "nodejs"
 
 export async function POST(request: NextRequest) {
   try {
@@ -40,6 +45,22 @@ export async function POST(request: NextRequest) {
       }
 
       console.log("File received:", file.name, file.type, file.size)
+      
+      // Extract text from the file BEFORE uploading to storage
+      console.log("Extracting text from the uploaded file")
+      try {
+        // Convert the File object to a Buffer for our document parser
+        const arrayBuffer = await file.arrayBuffer()
+        const buffer = Buffer.from(arrayBuffer)
+        
+        // Extract text based on file type
+        content = await extractTextFromFile(buffer, file.name, file.type)
+        console.log(`Successfully extracted ${content.length} characters of text`)
+      } catch (extractError: any) {
+        console.error("Error extracting text:", extractError)
+        // Continue without extracted text
+        content = `[Failed to extract text from ${file.name}: ${extractError.message || "Unknown error"}]`
+      }
       
       // Generate a unique file name to prevent collisions
       const uniquePrefix = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
@@ -87,6 +108,62 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Get lesson info for AI context
+    const { data: lesson, error: lessonError } = await supabaseAdmin
+      .from("lessons")
+      .select("*")
+      .eq("id", lessonId)
+      .single()
+    
+    if (lessonError) {
+      console.error("Error fetching lesson:", lessonError)
+      // Continue anyway - we'll just have less context for AI
+    }
+    
+    // Generate AI analysis of the content if we have content
+    let aiSummary = null
+    let keyConcepts = null
+    
+    if (content && content.length > 10) {
+      try {
+        console.log("Generating AI analysis of content")
+        
+        const { text: analysisJson } = await generateText({
+          model: openai("gpt-3.5-turbo"),
+          prompt: `You are an education assistant tasked with analyzing learning materials.
+          
+          Analyze the following learning material about ${lesson?.topic || "the subject"} and create:
+          1. A concise summary of the main ideas
+          2. A list of 5-10 key concepts that students should understand
+          
+          LEARNING MATERIAL:
+          ${content}
+          
+          Return your analysis as a JSON object with the following structure:
+          {
+            "summary": "A comprehensive summary of the material in 3-5 paragraphs",
+            "key_concepts": [
+              {"concept": "Key concept 1", "description": "Brief explanation of this concept"},
+              {"concept": "Key concept 2", "description": "Brief explanation of this concept"}
+              // etc.
+            ]
+          }
+          
+          Only return the JSON object, nothing else.`,
+        })
+        
+        // Parse the AI response
+        const analysis = JSON.parse(analysisJson)
+        aiSummary = analysis.summary
+        keyConcepts = analysis.key_concepts
+        
+        console.log("AI analysis generated successfully")
+      } catch (aiError: any) {
+        console.error("Error generating AI analysis:", aiError)
+        // Continue without AI analysis
+      }
+    }
+
     // Save material metadata to database
     console.log("Saving material to database")
     const { data: material, error } = await supabaseAdmin
@@ -98,6 +175,8 @@ export async function POST(request: NextRequest) {
         content,
         file_url: fileUrl,
         file_name: fileName,
+        ai_summary: aiSummary,
+        key_concepts: keyConcepts,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
@@ -120,21 +199,10 @@ export async function POST(request: NextRequest) {
 
     console.log("Material saved successfully:", material.id)
     
-    // Trigger AI processing of the material - don't await to avoid blocking the response
-    fetch(`${request.nextUrl.origin}/api/materials/process`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ materialId: material.id })
-    })
-      .then(() => console.log("Material processing triggered successfully"))
-      .catch(err => console.error("Failed to trigger material processing:", err))
-    
     return NextResponse.json({
       success: true,
       material,
-      message: "Material saved successfully and processing started"
+      message: "Material saved successfully with extracted text and analysis"
     })
   } catch (error: any) {
     console.error("Error uploading material:", error)

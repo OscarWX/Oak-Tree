@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
 
     // Generate understanding analysis
     const { text: analysisJson } = await generateText({
-      model: openai("gpt-4o"),
+      model: openai("gpt-3.5-turbo"),
       prompt: `Analyze this chat between a student and Oakie (an AI bird) about ${session.lessons.topic}.
 
       CHAT HISTORY:
