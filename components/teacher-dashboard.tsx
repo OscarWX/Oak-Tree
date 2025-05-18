@@ -2,12 +2,23 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, BookOpen, TreesIcon as Tree, ChevronRight } from "lucide-react"
+import { ArrowLeft, BookOpen, TreesIcon as Tree, ChevronRight, Trash2 } from "lucide-react"
 import TeacherLessonView from "./teacher-lesson-view"
 import TeacherClassView from "./teacher-class-view"
 import { useCourses } from "@/hooks/use-courses"
 import { Skeleton } from "@/components/ui/skeleton"
 import AddCourseDialog from "./teacher/AddCourseDialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 // Define view types
 type TeacherView = "dashboard" | "class" | "lesson"
@@ -21,6 +32,7 @@ export default function TeacherDashboard({ onBack }: TeacherDashboardProps) {
   const [currentView, setCurrentView] = useState<TeacherView>("dashboard")
   const [selectedCourse, setSelectedCourse] = useState<any>(null)
   const [selectedLesson, setSelectedLesson] = useState<any>(null)
+  const [deletingCourseId, setDeletingCourseId] = useState<string | null>(null)
 
   // Fetch courses from Supabase
   const { courses, isLoading, error, refetch } = useCourses()
@@ -45,6 +57,29 @@ export default function TeacherDashboard({ onBack }: TeacherDashboardProps) {
       setCurrentView("dashboard")
     } else {
       onBack()
+    }
+  }
+
+  // Handle course deletion
+  const handleDeleteCourse = async (courseId: string) => {
+    setDeletingCourseId(courseId)
+    try {
+      const response = await fetch(`/api/courses/${courseId}`, {
+        method: "DELETE",
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to delete course")
+      }
+
+      // Refetch courses after successful deletion
+      refetch()
+    } catch (error) {
+      console.error("Error deleting course:", error)
+      alert("Failed to delete course. Please try again.")
+    } finally {
+      setDeletingCourseId(null)
     }
   }
 
@@ -110,11 +145,13 @@ export default function TeacherDashboard({ onBack }: TeacherDashboardProps) {
               {courses.map((course) => (
                 <div
                   key={course.id}
-                  className="border rounded-lg p-6 hover:shadow-md transition-all duration-200 cursor-pointer"
-                  onClick={() => handleClassClick(course)}
+                  className="border rounded-lg p-6 hover:shadow-md transition-all duration-200"
                 >
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
+                    <div 
+                      className="flex items-center gap-4 cursor-pointer flex-1"
+                      onClick={() => handleClassClick(course)}
+                    >
                       <div className="h-12 w-12 rounded-full bg-green-100 flex items-center justify-center">
                         <BookOpen className="h-6 w-6 text-green-600" />
                       </div>
@@ -125,7 +162,43 @@ export default function TeacherDashboard({ onBack }: TeacherDashboardProps) {
                         </p>
                       </div>
                     </div>
-                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                    <div className="flex items-center gap-2">
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => e.stopPropagation()} // Prevent triggering the course click
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete Course</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Are you sure you want to delete <strong>{course.title}</strong>? This will permanently remove the course
+                              and ALL its lessons and materials. This action cannot be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDeleteCourse(course.id)}
+                              className="bg-red-500 hover:bg-red-600"
+                              disabled={deletingCourseId === course.id}
+                            >
+                              {deletingCourseId === course.id ? "Deleting..." : "Delete"}
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                      <ChevronRight 
+                        className="h-5 w-5 text-muted-foreground" 
+                        onClick={() => handleClassClick(course)}
+                      />
+                    </div>
                   </div>
                 </div>
               ))}

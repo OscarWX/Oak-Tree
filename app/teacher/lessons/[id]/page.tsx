@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ArrowLeft } from "lucide-react"
@@ -13,6 +13,7 @@ import type { Lesson } from "@/lib/supabase"
 
 export default function LessonPage() {
   const params = useParams()
+  const router = useRouter()
   const lessonId = params.id as string
 
   const [lesson, setLesson] = useState<Lesson | null>(null)
@@ -63,14 +64,18 @@ export default function LessonPage() {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-6">
-        <Button variant="ghost" size="sm" asChild className="mb-2">
-          <Link href="/teacher/dashboard">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Courses
-          </Link>
-        </Button>
-        <h1 className="text-2xl font-bold">{lessonTitle}</h1>
-        <p className="text-muted-foreground">{lesson.courses?.title}</p>
+        <div className="flex justify-between items-start">
+          <div>
+            <Button variant="ghost" size="sm" asChild className="mb-2">
+              <Link href="/teacher/dashboard">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back to Courses
+              </Link>
+            </Button>
+            <h1 className="text-2xl font-bold">{lessonTitle}</h1>
+            <p className="text-muted-foreground">{(lesson as any).courses?.title}</p>
+          </div>
+        </div>
       </div>
 
       <Tabs defaultValue="materials" className="w-full">

@@ -1,10 +1,23 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { BookOpen, Users, BarChart2 } from "lucide-react"
+import { BookOpen, Users, BarChart2, Trash2 } from "lucide-react"
 import AddLessonButton from "./teacher/AddLessonButton"
 import { useLessons } from "@/hooks/use-lessons"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 interface TeacherClassViewProps {
   course: any
@@ -13,6 +26,56 @@ interface TeacherClassViewProps {
 
 export default function TeacherClassView({ course, onLessonClick }: TeacherClassViewProps) {
   const { lessons, isLoading, error, refetch } = useLessons(course.id)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deletingLessonId, setDeletingLessonId] = useState<string | null>(null)
+  const router = useRouter()
+
+  // Handle course deletion
+  const handleDeleteCourse = async () => {
+    setIsDeleting(true)
+    try {
+      const response = await fetch(`/api/courses/${course.id}`, {
+        method: "DELETE",
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to delete course")
+      }
+
+      // Navigate back to dashboard by refreshing
+      router.refresh()
+      // The parent component will show the dashboard since the course is deleted
+    } catch (error) {
+      console.error("Error deleting course:", error)
+      alert("Failed to delete course. Please try again.")
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  // Handle lesson deletion
+  const handleDeleteLesson = async (lessonId: string) => {
+    setDeletingLessonId(lessonId)
+    try {
+      const response = await fetch(`/api/lessons/${lessonId}`, {
+        method: "DELETE",
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to delete lesson")
+      }
+
+      // Refetch lessons after successful deletion
+      refetch()
+    } catch (error) {
+      console.error("Error deleting lesson:", error)
+      alert("Failed to delete lesson. Please try again.")
+    } finally {
+      setDeletingLessonId(null)
+    }
+  }
 
   // Get understanding level text and color
   const getUnderstandingLevel = (lessonId: string) => {
@@ -45,7 +108,9 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
       <div className="mb-8">
         <div className="flex justify-between items-center mb-2">
           <h1 className="text-2xl font-bold">{course.title}</h1>
-          <AddLessonButton courseId={course.id} onLessonAdded={refetch} />
+          <div className="flex gap-2">
+            <AddLessonButton courseId={course.id} onLessonAdded={refetch} />
+          </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
@@ -87,11 +152,13 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
             return (
               <div
                 key={lesson.id}
-                className="border rounded-lg p-5 hover:shadow-md transition-all duration-200 cursor-pointer"
-                onClick={() => onLessonClick(lesson)}
+                className="border rounded-lg p-5 hover:shadow-md transition-all duration-200"
               >
                 <div className="flex items-center justify-between">
-                  <div>
+                  <div 
+                    className="flex-1 cursor-pointer"
+                    onClick={() => onLessonClick(lesson)}
+                  >
                     <h3 className="text-lg font-medium mb-1">
                       Week {lesson.week_number} - Lesson {lesson.lesson_number}: {lesson.topic}
                     </h3>
@@ -100,16 +167,49 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
                       <span className={understanding.color + " ml-1"}>{understanding.text}</span>
                     </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onLessonClick(lesson)
-                    }}
-                  >
-                    View Details
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="text-red-500 hover:text-red-700 h-8 w-8"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete Lesson</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Are you sure you want to delete "{lesson.topic}"? This will permanently remove the lesson and all associated materials.
+                            This action cannot be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => handleDeleteLesson(lesson.id)}
+                            className="bg-red-500 hover:bg-red-600"
+                            disabled={deletingLessonId === lesson.id}
+                          >
+                            {deletingLessonId === lesson.id ? "Deleting..." : "Delete"}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onLessonClick(lesson)
+                      }}
+                    >
+                      View Details
+                    </Button>
+                  </div>
                 </div>
               </div>
             )

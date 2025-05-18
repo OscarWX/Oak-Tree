@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { FileText, Upload, BookOpen, AlertCircle, Maximize2 } from "lucide-react"
+import { FileText, Upload, BookOpen, AlertCircle, Maximize2, Trash2 } from "lucide-react"
 import MaterialUploadForm from "./MaterialUploadForm"
 import { supabase } from "@/lib/supabase"
 import type { Material } from "@/lib/supabase"
@@ -14,7 +14,20 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DialogDescription,
+  DialogFooter,
 } from "@/components/ui/dialog"
+import { 
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 interface LessonMaterialsTabProps {
   lessonId: string
@@ -25,6 +38,7 @@ export default function LessonMaterialsTab({ lessonId, lessonTitle }: LessonMate
   const [materials, setMaterials] = useState<Material[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState("existing")
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useEffect(() => {
     fetchMaterials()
@@ -51,6 +65,49 @@ export default function LessonMaterialsTab({ lessonId, lessonTitle }: LessonMate
   const handleMaterialUploaded = (material: Material) => {
     setMaterials((prev) => [material, ...prev])
     setActiveTab("existing")
+  }
+
+  const handleDeleteMaterial = async (materialId: string) => {
+    setIsDeleting(true)
+    try {
+      // First, get material info to check if there's a file to delete
+      const { data: material, error: fetchError } = await supabase
+        .from("materials")
+        .select("file_name")
+        .eq("id", materialId)
+        .single()
+      
+      if (fetchError) throw fetchError
+
+      // Delete from materials table
+      const { error: deleteError } = await supabase
+        .from("materials")
+        .delete()
+        .eq("id", materialId)
+      
+      if (deleteError) throw deleteError
+
+      // If there's a file associated, delete it from storage
+      if (material?.file_name) {
+        const { error: storageError } = await supabase.storage
+          .from("materials")
+          .remove([material.file_name])
+        
+        if (storageError) {
+          console.error("Failed to delete file from storage:", storageError)
+          // Continue anyway, since the database record is deleted
+        }
+      }
+
+      // Update local state
+      setMaterials(prev => prev.filter(m => m.id !== materialId))
+      
+    } catch (error) {
+      console.error("Error deleting material:", error)
+      alert("Failed to delete material. Please try again.")
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   return (
@@ -82,13 +139,40 @@ export default function LessonMaterialsTab({ lessonId, lessonTitle }: LessonMate
                       )}
                       <CardTitle className="text-lg">{material.title}</CardTitle>
                     </div>
-                    {material.file_url && (
-                      <Button variant="ghost" size="sm" asChild>
-                        <a href={material.file_url} target="_blank" rel="noopener noreferrer">
-                          View
-                        </a>
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {material.file_url && (
+                        <Button variant="ghost" size="sm" asChild>
+                          <a href={material.file_url} target="_blank" rel="noopener noreferrer">
+                            View
+                          </a>
+                        </Button>
+                      )}
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-700 h-8 w-8">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete Material</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Are you sure you want to delete "{material.title}"? This action cannot be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction 
+                              onClick={() => handleDeleteMaterial(material.id)}
+                              className="bg-red-500 hover:bg-red-600"
+                              disabled={isDeleting}
+                            >
+                              {isDeleting ? "Deleting..." : "Delete"}
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
                   </div>
                   <CardDescription>
                     {new Date(material.created_at).toLocaleDateString()} • {material.content_type}
