@@ -24,19 +24,56 @@ export async function DELETE(
 
     const lessonIds = lessons?.map(lesson => lesson.id) || []
 
-    // 2. Find all materials associated with these lessons
-    const { data: materials, error: materialsError } = await supabaseAdmin
-      .from("materials")
-      .select("file_name")
-      .in("lesson_id", lessonIds)
-
-    if (materialsError) {
-      console.error("Error fetching materials:", materialsError)
-      // Continue with deletion anyway
-    }
-
-    // 3. Delete all materials from these lessons
     if (lessonIds.length > 0) {
+      // 2. Get all chat sessions for these lessons (we'll need their IDs to delete chat messages)
+      const { data: chatSessions, error: chatSessionsError } = await supabaseAdmin
+        .from("chat_sessions")
+        .select("id")
+        .in("lesson_id", lessonIds)
+
+      if (chatSessionsError) {
+        console.error("Error fetching chat sessions:", chatSessionsError)
+        // Continue with deletion anyway
+      }
+
+      const sessionIds = chatSessions?.map(session => session.id) || []
+
+      // 3. Delete all chat messages associated with these sessions
+      if (sessionIds.length > 0) {
+        const { error: deleteMessagesError } = await supabaseAdmin
+          .from("chat_messages")
+          .delete()
+          .in("session_id", sessionIds)
+
+        if (deleteMessagesError) {
+          console.error("Error deleting chat messages:", deleteMessagesError)
+          // Continue with deletion anyway
+        }
+      }
+
+      // 4. Delete all chat sessions for these lessons
+      const { error: deleteSessionsError } = await supabaseAdmin
+        .from("chat_sessions")
+        .delete()
+        .in("lesson_id", lessonIds)
+
+      if (deleteSessionsError) {
+        console.error("Error deleting chat sessions:", deleteSessionsError)
+        // Continue with deletion anyway
+      }
+
+      // 5. Find all materials associated with these lessons
+      const { data: materials, error: materialsError } = await supabaseAdmin
+        .from("materials")
+        .select("file_name")
+        .in("lesson_id", lessonIds)
+
+      if (materialsError) {
+        console.error("Error fetching materials:", materialsError)
+        // Continue with deletion anyway
+      }
+
+      // 6. Delete all materials from these lessons
       const { error: deleteMaterialsError } = await supabaseAdmin
         .from("materials")
         .delete()
@@ -47,7 +84,7 @@ export async function DELETE(
         // Continue with deletion anyway
       }
 
-      // 4. Delete files from storage
+      // 7. Delete files from storage
       if (materials && materials.length > 0) {
         const fileNames = materials
           .map(m => m.file_name)
@@ -65,7 +102,7 @@ export async function DELETE(
         }
       }
 
-      // 5. Delete all lessons from the course
+      // 8. Delete all lessons from the course
       const { error: deleteLessonsError } = await supabaseAdmin
         .from("lessons")
         .delete()
@@ -80,7 +117,7 @@ export async function DELETE(
       }
     }
 
-    // 6. Finally, delete the course itself
+    // 9. Finally, delete the course itself
     const { error: deleteCourseError } = await supabaseAdmin
       .from("courses")
       .delete()

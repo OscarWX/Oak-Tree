@@ -19,7 +19,44 @@ export async function DELETE(
       // Continue with deletion anyway
     }
 
-    // 2. Delete all materials from the lesson
+    // 2. Get all chat sessions for this lesson (we'll need their IDs to delete chat messages)
+    const { data: chatSessions, error: chatSessionsError } = await supabaseAdmin
+      .from("chat_sessions")
+      .select("id")
+      .eq("lesson_id", lessonId)
+
+    if (chatSessionsError) {
+      console.error("Error fetching chat sessions for lesson:", chatSessionsError)
+      // Continue with deletion anyway
+    }
+
+    const sessionIds = chatSessions?.map(session => session.id) || []
+
+    // 3. Delete all chat messages associated with these sessions
+    if (sessionIds.length > 0) {
+      const { error: deleteMessagesError } = await supabaseAdmin
+        .from("chat_messages")
+        .delete()
+        .in("session_id", sessionIds)
+
+      if (deleteMessagesError) {
+        console.error("Error deleting chat messages:", deleteMessagesError)
+        // Continue with deletion anyway
+      }
+    }
+
+    // 4. Delete all chat sessions for this lesson
+    const { error: deleteSessionsError } = await supabaseAdmin
+      .from("chat_sessions")
+      .delete()
+      .eq("lesson_id", lessonId)
+
+    if (deleteSessionsError) {
+      console.error("Error deleting chat sessions:", deleteSessionsError)
+      // Continue with deletion anyway
+    }
+
+    // 5. Delete all materials from the lesson
     const { error: deleteMaterialsError } = await supabaseAdmin
       .from("materials")
       .delete()
@@ -33,7 +70,7 @@ export async function DELETE(
       )
     }
 
-    // 3. Delete files from storage (if any)
+    // 6. Delete files from storage (if any)
     if (materials && materials.length > 0) {
       const fileNames = materials
         .map(m => m.file_name)
@@ -51,7 +88,7 @@ export async function DELETE(
       }
     }
 
-    // 4. Delete the lesson itself
+    // 7. Finally, delete the lesson itself
     const { error: deleteLessonError } = await supabaseAdmin
       .from("lessons")
       .delete()
