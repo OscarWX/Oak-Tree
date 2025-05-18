@@ -65,26 +65,36 @@ ${keyConceptsText}
     try {
       const { text } = await generateText({
         model: openai("gpt-3.5-turbo"),
-        prompt: `You are an expert education assistant tasked with synthesizing learning materials.
+        prompt: `You are an expert education assistant tasked with EXCLUSIVELY synthesizing provided learning materials.
         
-        Analyze the following material summaries and key concepts from a lesson about "${lesson.topic}" in the course "${lesson.courses?.title || "the course"}" and create:
-        1. A comprehensive lesson summary that ties together all the material (3-5 paragraphs)
-        2. A list of 5-7 key concepts that students should understand from this entire lesson
-        
-        MATERIALS:
-        ${materialContents}
-        
-        Return your analysis as a JSON object with the following structure:
-        {
-          "summary": "A comprehensive summary of the entire lesson in 3-5 paragraphs",
-          "key_concepts": [
-            {"concept": "Key concept 1", "description": "Brief explanation of this concept"},
-            {"concept": "Key concept 2", "description": "Brief explanation of this concept"}
-            // etc.
-          ]
-        }
-        
-        Only return the JSON object, nothing else.`,
+CRITICAL INSTRUCTION: Your summary and key concepts must be STRICTLY based on the materials provided. Do NOT introduce any new information, concepts, or examples that are not explicitly mentioned in the provided materials.
+
+Your task:
+1. Create a comprehensive lesson summary that ONLY combines information from all the provided materials
+2. Extract 5-7 key concepts that are EXPLICITLY mentioned in the materials
+
+MATERIALS:
+${materialContents}
+
+RULES FOR SUMMARY CREATION:
+- ONLY include information that is explicitly stated in the materials
+- Do NOT add any new concepts, explanations, or examples not present in the materials
+- Do NOT expand upon concepts with your own knowledge
+- Do NOT make inferences beyond what is directly stated
+- Organize and synthesize the existing information in a coherent way
+- If the materials contain contradictions or differing perspectives, note these in your summary
+
+Return your analysis as a JSON object with the following structure:
+{
+  "summary": "A comprehensive summary that ONLY includes information from the materials provided",
+  "key_concepts": [
+    {"concept": "Key concept 1 (from materials)", "description": "Description using ONLY information from materials"},
+    {"concept": "Key concept 2 (from materials)", "description": "Description using ONLY information from materials"}
+    // etc.
+  ]
+}
+
+Only return the JSON object, nothing else.`,
       });
       
       analysisJson = text;

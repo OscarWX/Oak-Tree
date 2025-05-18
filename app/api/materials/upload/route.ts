@@ -138,24 +138,34 @@ export async function POST(request: NextRequest) {
           model: openai("gpt-3.5-turbo"),
           prompt: `You are an education assistant tasked with analyzing learning materials.
           
-          Analyze the following learning material about ${lesson?.topic || "the subject"} and create:
-          1. A concise summary of the main ideas
-          2. A list of 2-3 key concepts that students should understand, the key concepts should be high-level concepts that are important to the material
-          
-          LEARNING MATERIAL:
-          ${trimmedContent}
-          
-          Return your analysis as a JSON object with the following structure:
-          {
-            "summary": "A comprehensive summary of the material in 3-5 paragraphs",
-            "key_concepts": [
-              {"concept": "Key concept 1", "description": "Brief explanation of this concept"},
-              {"concept": "Key concept 2", "description": "Brief explanation of this concept"}
-              // etc.
-            ]
-          }
-          
-          Only return the JSON object, nothing else.`,
+CRITICAL INSTRUCTION: Your summary and key concepts must ONLY include information that is EXPLICITLY mentioned in the provided material. Do NOT add any new information, concepts, or examples.
+
+Analyze the following learning material about ${lesson?.topic || "the subject"} and create:
+1. A concise summary that ONLY contains information present in the material
+2. A list of 2-3 key concepts that are EXPLICITLY mentioned and explained in the material
+
+LEARNING MATERIAL:
+${trimmedContent}
+
+RULES FOR ANALYSIS:
+- ONLY include information that is explicitly stated in the material
+- Do NOT add any new concepts, explanations, or examples not present in the material
+- Do NOT expand upon concepts using your own knowledge
+- Do NOT make inferences beyond what is directly stated
+- Extract the most important information verbatim or very closely paraphrased
+- If something is unclear in the material, do not try to clarify it with external knowledge
+
+Return your analysis as a JSON object with the following structure:
+{
+  "summary": "A summary that ONLY includes information directly from the material",
+  "key_concepts": [
+    {"concept": "Key concept 1 (from material)", "description": "Description using ONLY information from the material"},
+    {"concept": "Key concept 2 (from material)", "description": "Description using ONLY information from the material"}
+    // etc.
+  ]
+}
+
+Only return the JSON object, nothing else.`,
         })
         
         // Store the raw AI response

@@ -50,6 +50,9 @@ export type Lesson = {
   topic: string
   ai_summary: string | null
   key_concepts: any[] | null
+  preclass_reading: string | null
+  teacher_need: string | null
+  raw?: string | null
   created_at: string
   updated_at?: string
 }
