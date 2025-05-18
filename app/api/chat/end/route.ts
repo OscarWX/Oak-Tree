@@ -35,45 +35,85 @@ export async function POST(request: NextRequest) {
 
     // Format chat history for AI
     const formattedHistory = chatHistory
-      .map((msg) => `${msg.sender_type === "ai" ? "Oakie" : "Student"}: ${msg.content}`)
+      .map((msg) => `${msg.sender_type === "ai" ? msg.content : `Student: ${msg.content}`}`)
       .join("\n\n")
+
+    // Get lesson data for analysis context
+    const { data: lessonData, error: lessonError } = await supabaseAdmin
+      .from("lessons")
+      .select("ai_summary, key_concepts")
+      .eq("id", session.lesson_id)
+      .single()
 
     // Get materials for the lesson to know what concepts should be understood
     const { data: materials, error: materialsError } = await supabaseAdmin
       .from("materials")
-      .select("*")
+      .select("title, ai_summary, key_concepts")
       .eq("lesson_id", session.lesson_id)
 
     if (materialsError) {
       return NextResponse.json({ error: "Failed to fetch materials" }, { status: 500 })
     }
 
-    // Extract key concepts from materials
-    const keyConcepts = materials
-      .flatMap((m) => m.key_concepts || [])
-      .map((c) => c.concept)
-      .join(", ")
+    // Extract key concepts from lesson and materials
+    interface KeyConcept {
+      concept: string;
+      description?: string;
+    }
+    
+    let allKeyConcepts: KeyConcept[] = [];
+    
+    // Add lesson key concepts
+    if (lessonData && lessonData.key_concepts && Array.isArray(lessonData.key_concepts)) {
+      allKeyConcepts = [...lessonData.key_concepts] as KeyConcept[];
+    }
+    
+    // Add material key concepts
+    if (materials && materials.length > 0) {
+      materials.forEach(material => {
+        if (material.key_concepts && Array.isArray(material.key_concepts)) {
+          allKeyConcepts = [...allKeyConcepts, ...(material.key_concepts as KeyConcept[])];
+        }
+      });
+    }
+    
+    // Remove duplicates by concept name
+    const uniqueConcepts = Array.from(
+      new Map(allKeyConcepts.map(item => [item.concept, item])).values()
+    );
+
+    // Create a list of key concepts for assessment
+    const conceptsList = uniqueConcepts
+      .map(c => `- ${c.concept}: ${c.description || ""}`)
+      .join("\n");
 
     // Generate understanding analysis
     const { text: analysisJson } = await generateText({
       model: openai("gpt-3.5-turbo"),
-      prompt: `Analyze this chat between a student and Oakie (an AI bird) about ${session.lessons.topic}.
+      prompt: `Analyze this chat between a student and two bird characters (Chirpy and Sage) about ${session.lessons.topic}.
 
       CHAT HISTORY:
       ${formattedHistory}
       
       KEY CONCEPTS THAT SHOULD BE UNDERSTOOD:
-      ${keyConcepts}
+      ${conceptsList}
       
-      Based on the student's explanations, evaluate their understanding of the topic.
+      Based on the student's explanations in the chat, evaluate their understanding of the topic.
       
       Return your analysis as a JSON object with the following structure:
       {
-        "understanding_level": [number between 0-100],
-        "strengths": [array of concepts the student understands well],
-        "misunderstandings": [array of concepts the student struggles with or has misconceptions about],
-        "summary": [2-3 paragraph summary of the student's understanding]
+        "understanding_level": [number between 0-100, with 0 being no understanding and 100 being perfect understanding],
+        "strengths": [array of specific concepts the student explained well],
+        "misunderstandings": [array of specific concepts the student struggled with or has misconceptions about],
+        "summary": [2-3 paragraph summary of the student's understanding, highlighting strong points and areas for improvement]
       }
+      
+      IMPORTANT RULES FOR EVALUATION:
+      1. Focus ONLY on what the student actually said in the chat
+      2. Base your evaluation on how well they were able to explain concepts to Chirpy
+      3. Consider whether Sage had to intervene to correct misunderstandings
+      4. Be fair and objective - don't assume understanding beyond what was demonstrated
+      5. A higher score should reflect accurate explanations of more key concepts
       
       Only return the JSON object, nothing else.`,
     })
@@ -91,6 +131,19 @@ export async function POST(request: NextRequest) {
         summary: "Unable to generate proper analysis. Please review the chat manually.",
       }
     }
+
+    // Generate a cheerful goodbye message from Chirpy
+    let goodbyeMessage = "Chirpy: *jumps up and down excitedly* Thank you so much for teaching me today! I've learned so much from you about " + 
+      session.lessons.topic + "! You're a great teacher! *chirps happily* I hope we can talk again soon! Bye for now!";
+
+    // Save the goodbye message
+    const timestamp = new Date().toISOString()
+    await supabaseAdmin.from("chat_messages").insert({
+      session_id: sessionId,
+      sender_type: "ai",
+      content: goodbyeMessage,
+      timestamp
+    })
 
     // Update the session with the analysis
     const { data: updatedSession, error: updateError } = await supabaseAdmin
@@ -114,6 +167,7 @@ export async function POST(request: NextRequest) {
       success: true,
       analysis,
       session: updatedSession,
+      goodbyeMessage
     })
   } catch (error) {
     console.error("Error ending chat session:", error)

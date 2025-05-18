@@ -45,6 +45,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to fetch materials" }, { status: 500 })
     }
 
+    // Get lesson overview data if available
+    const { data: lessonData, error: lessonError } = await supabaseAdmin
+      .from("lessons")
+      .select("ai_summary, key_concepts")
+      .eq("id", session.lesson_id)
+      .single()
+
     // Save the user's message to the database
     const timestamp = new Date().toISOString()
     const { error: saveError } = await supabaseAdmin.from("chat_messages").insert({
@@ -66,45 +73,81 @@ export async function POST(request: NextRequest) {
     }))
 
     // Extract context from materials
-    const materialContent = materials
-      .map(m => {
-        let content = `TITLE: ${m.title}\n`
-        if (m.ai_summary) {
-          content += `SUMMARY: ${m.ai_summary}\n`
-        }
-        if (m.key_concepts && Array.isArray(m.key_concepts) && m.key_concepts.length > 0) {
-          content += `KEY CONCEPTS: ${m.key_concepts.map((c: { concept: string }) => c.concept).join(", ")}\n`
-        }
-        return content
-      })
-      .join("\n\n")
+    let materialContent = "";
+    if (materials && materials.length > 0) {
+      materialContent = materials
+        .map(m => {
+          let content = `TITLE: ${m.title}\n`
+          if (m.ai_summary) {
+            content += `SUMMARY: ${m.ai_summary}\n`
+          }
+          if (m.key_concepts && Array.isArray(m.key_concepts) && m.key_concepts.length > 0) {
+            content += `KEY CONCEPTS: ${m.key_concepts.map((c: { concept: string, description: string }) => 
+              `${c.concept}: ${c.description || ""}`
+            ).join("\n")}\n`
+          }
+          return content
+        })
+        .join("\n\n")
+    }
+
+    // Get lesson overview summary and key concepts
+    let lessonOverview = "";
+    let keyConcepts = [];
+    if (lessonData) {
+      if (lessonData.ai_summary) {
+        lessonOverview = `LESSON SUMMARY: ${lessonData.ai_summary}\n\n`;
+      }
+      if (lessonData.key_concepts && Array.isArray(lessonData.key_concepts)) {
+        keyConcepts = lessonData.key_concepts;
+      }
+    }
+
+    // Combine all context
+    const combinedContext = `${lessonOverview}${materialContent}`;
 
     // Generate AI response
     const { text: aiResponse } = await generateText({
       model: openai("gpt-3.5-turbo"),
-      system: `You are Oakie, an AI study buddy designed to help students learn by encouraging them to teach concepts back to you.
-      
-      Your role is to:
-      1. Act as a curious and interested peer who wants to learn
-      2. Ask students to explain concepts from their lesson materials
-      3. Be friendly, encouraging, and use simple language
-      4. Express confusion or ask follow-up questions when appropriate
-      5. Show excitement when students explain things well
-      6. Guide them to think more deeply when they miss important points
-      7. Never simply tell them the answers - your goal is to make THEM explain
-      
-      Current lesson: ${session.lessons.topic}
-      
-      Material context:
-      ${materialContent}
-      
-      IMPORTANT GUIDELINES:
-      - Start by asking the student to explain key concepts
-      - Act like you're learning from them, not teaching them
-      - Ask specific questions about the lesson concepts
-      - Be conversational and friendly, like a study partner
-      - Encourage the student to elaborate on their explanations
-      - You are a friendly bird character who lives in an oak tree, so occasionally use bird metaphors`,
+      system: `You are simulating a chat between two bird characters and a student who is learning about ${session.lessons.topic}.
+
+CHARACTER SETUP:
+- Chirpy: A young, curious blue jay who is eager to learn from the student. Chirpy asks questions, expresses excitement, and encourages the student to explain concepts.
+- Sage: A wise old owl who appears only when the student seems confused or gives incorrect information. Sage provides gentle guidance and hints to help the student understand.
+
+LESSON INFORMATION:
+Topic: ${session.lessons.topic}
+
+CONTEXT INFORMATION:
+${combinedContext}
+
+KEY CONCEPTS TO ASK ABOUT:
+${JSON.stringify(keyConcepts)}
+
+CONVERSATION FLOW:
+1. Chirpy should ask questions about the key concepts one by one
+2. When the student answers correctly, Chirpy should express excitement and understanding
+3. When the student answers incorrectly or seems confused, Sage should briefly appear to provide hints based on the lesson content
+4. After discussing all concepts, Chirpy should thank the student for teaching
+
+FORMAT YOUR RESPONSE LIKE THIS:
+Chirpy: [Chirpy's message]
+OR
+Sage: [Sage's message]
+
+GUIDELINES FOR CHARACTER VOICES:
+- Chirpy: Enthusiastic, uses simple language, asks lots of questions, uses phrases like "Wow!", "That's cool!", "I never knew that!", and "Can you explain more about...?"
+- Sage: Calm, wise, gentle, uses phrases like "I believe there's a small misunderstanding", "Let me offer a hint...", and "Consider that..."
+
+IMPORTANT INSTRUCTIONS:
+- ONLY use material from the provided context to evaluate student answers
+- Do NOT introduce new concepts that aren't in the lesson materials
+- Keep responses conversational and engaging
+- Focus on having the student explain the key concepts
+- Maintain the characters' distinct personalities throughout
+- Track which concepts have been covered to ensure all are addressed
+- When the student gives a good explanation, have Chirpy summarize what they learned
+- Always respond in character as either Chirpy or Sage, never as a generic AI`,
       messages: [
         ...formattedHistory,
         { role: "user" as const, content: message }
