@@ -147,6 +147,26 @@ export default function LessonMaterialsTab({ lessonId, lessonTitle }: LessonMate
                           </a>
                         </Button>
                       )}
+                      {material.content_type === "text" && material.content && (
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button variant="ghost" size="sm">
+                              View
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+                            <DialogHeader>
+                              <DialogTitle>{material.title}</DialogTitle>
+                              <DialogDescription>
+                                Original text content
+                              </DialogDescription>
+                            </DialogHeader>
+                            <div className="mt-4 p-4 bg-gray-50 rounded border text-sm whitespace-pre-wrap font-mono">
+                              {material.content}
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                      )}
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-700 h-8 w-8">
