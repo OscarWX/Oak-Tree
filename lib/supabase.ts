@@ -48,7 +48,10 @@ export type Lesson = {
   week_number: number
   lesson_number: number
   topic: string
+  ai_summary: string | null
+  key_concepts: any[] | null
   created_at: string
+  updated_at?: string
 }
 
 export type Material = {

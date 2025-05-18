@@ -4,12 +4,13 @@ import { useState, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, BookOpen, Sparkles, Loader2 } from "lucide-react"
 import Link from "next/link"
 import LessonMaterialsTab from "@/components/teacher/LessonMaterialsTab"
 import StudentUnderstandingTab from "@/components/teacher/StudentUnderstandingTab"
 import { supabase } from "@/lib/supabase"
 import type { Lesson } from "@/lib/supabase"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export default function LessonPage() {
   const params = useParams()
@@ -18,6 +19,8 @@ export default function LessonPage() {
 
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchLessonDetails()
@@ -34,6 +37,35 @@ export default function LessonPage() {
       console.error("Error fetching lesson:", error)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const generateLessonSummary = async () => {
+    setIsGeneratingSummary(true)
+    setSummaryError(null)
+    
+    try {
+      const response = await fetch(`/api/lessons/${lessonId}/summarize`, {
+        method: "POST",
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate lesson summary")
+      }
+
+      if (data.lesson) {
+        // Update the lesson state with the new summary
+        setLesson(data.lesson)
+      } else {
+        throw new Error("Invalid response from server")
+      }
+    } catch (error: any) {
+      console.error("Error generating lesson summary:", error)
+      setSummaryError(error.message || "Failed to generate summary")
+    } finally {
+      setIsGeneratingSummary(false)
     }
   }
 
@@ -81,8 +113,86 @@ export default function LessonPage() {
       <Tabs defaultValue="materials" className="w-full">
         <TabsList className="mb-6">
           <TabsTrigger value="materials">Materials</TabsTrigger>
+          <TabsTrigger value="overview">Lesson Overview</TabsTrigger>
           <TabsTrigger value="understanding">Student Understanding</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="overview">
+          <Card>
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle>Lesson Overview</CardTitle>
+                  <CardDescription>AI-generated summary of all materials in this lesson</CardDescription>
+                </div>
+                <Button 
+                  onClick={generateLessonSummary} 
+                  disabled={isGeneratingSummary}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {isGeneratingSummary ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-4 w-4 mr-2" />
+                      {lesson.ai_summary ? "Regenerate Summary" : "Generate Summary"}
+                    </>
+                  )}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {summaryError && (
+                <div className="mb-4 p-4 border border-red-200 bg-red-50 text-red-700 rounded-md">
+                  {summaryError}
+                </div>
+              )}
+              
+              {lesson.ai_summary ? (
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-lg font-medium mb-2">Summary</h3>
+                    <div className="text-sm text-muted-foreground">
+                      {lesson.ai_summary?.split('\n').map((paragraph: string, i: number) => (
+                        <p key={i} className="mb-4">{paragraph}</p>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {lesson.key_concepts && lesson.key_concepts.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-medium mb-2">Key Concepts</h3>
+                      <div className="space-y-3">
+                        {lesson.key_concepts.map((concept: any, index: number) => (
+                          <div key={index} className="border-l-2 border-green-600 pl-3 py-1">
+                            <h4 className="text-sm font-semibold text-green-700">{concept.concept}</h4>
+                            {concept.description && (
+                              <p className="text-sm text-muted-foreground">{concept.description}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center p-8">
+                  <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-medium mb-2">No Summary Available</h3>
+                  <p className="text-sm text-muted-foreground mb-6">
+                    Generate an AI summary of all materials in this lesson to help students understand the big picture.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Make sure you have added materials to this lesson first.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="materials">
           <LessonMaterialsTab lessonId={lessonId} lessonTitle={lessonTitle} />
