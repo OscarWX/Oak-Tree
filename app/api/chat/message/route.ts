@@ -156,21 +156,24 @@ IMPORTANT INSTRUCTIONS:
 
     // Save the AI response to the database
     const aiTimestamp = new Date().toISOString()
-    const { error: aiSaveError } = await supabaseAdmin.from("chat_messages").insert({
+    const { data: aiMessageData, error: aiSaveError } = await supabaseAdmin.from("chat_messages").insert({
       session_id: sessionId,
       sender_type: "ai",
       content: aiResponse,
       timestamp: aiTimestamp
-    })
+    }).select()
 
     if (aiSaveError) {
       console.error("Error saving AI response:", aiSaveError)
       // Continue anyway to provide a response to the user
     }
 
+    console.log("AI message saved:", aiMessageData)
+
     return NextResponse.json({
       success: true,
       message: aiResponse,
+      messageId: aiMessageData?.[0]?.id,
       timestamp: aiTimestamp
     })
   } catch (error: any) {

@@ -27,15 +27,25 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
   // Fetch existing chat sessions for this student and lesson
   const { sessions, isLoading: sessionsLoading, error: sessionsError } = useChatSessions(studentId, lessonId)
 
-  // Fetch chat messages for the active session
+  // Fetch chat messages for the active session (initial load)
   const { messages: chatMessages, isLoading: messagesLoading } = useChatMessages(sessionId || undefined)
 
-  // Format messages for display
-  const displayMessages = chatMessages.map((msg) => ({
-    role: msg.sender_type === "student" ? ("user" as const) : ("buddy" as const),
-    content: msg.content,
-    timestamp: new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-  }))
+  // Local message state that we can update optimistically
+  type DisplayMessage = { role: "user" | "buddy"; content: string; timestamp: string }
+  const [displayMessages, setDisplayMessages] = useState<DisplayMessage[]>([])
+
+  // Whenever the hook refreshes (first load / session switch) sync local state
+  useEffect(() => {
+    if (!messagesLoading) {
+      const mapped = chatMessages.map((msg) => ({
+        role: msg.sender_type === "student" ? ("user" as const) : ("buddy" as const),
+        content: msg.content,
+        timestamp: new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      }))
+      setDisplayMessages(mapped)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesLoading, chatMessages])
 
   // Start or resume chat session when component mounts
   useEffect(() => {
@@ -91,7 +101,19 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       setIsLoading(true)
 
       try {
-        // Send message to API
+        const userContent = input.trim()
+
+        // 1️⃣ Optimistically add the student's message to the list
+        setDisplayMessages(prev => [
+          ...prev,
+          {
+            role: "user",
+            content: userContent,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ])
+
+        // 2️⃣ Send message to API
         const response = await fetch("/api/chat/message", {
           method: "POST",
           headers: {
@@ -99,13 +121,29 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
           },
           body: JSON.stringify({
             sessionId,
-            message: input.trim(),
+            message: userContent,
           }),
         })
 
+        const data = await response.json()
+
         if (!response.ok) {
-          const data = await response.json()
           throw new Error(data.error || "Failed to send message")
+        }
+
+        // 3️⃣ Append the AI/Buddy message returned from the server
+        if (data.message) {
+          setDisplayMessages(prev => [
+            ...prev,
+            {
+              role: "buddy",
+              content: data.message,
+              timestamp: new Date(data.timestamp || Date.now()).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+            },
+          ])
         }
 
         // Clear input after successful send
