@@ -123,10 +123,16 @@ export async function POST(request: NextRequest) {
     // Generate AI analysis of the content if we have content
     let aiSummary = null
     let keyConcepts = null
+    let rawAiResponse = null
     
     if (content && content.length > 10) {
       try {
         console.log("Generating AI analysis of content")
+        
+        // Trim content if it's extremely long to fit within API limits
+        const trimmedContent = content.length > 100000 
+          ? content.substring(0, 100000) + "... [content truncated due to length]" 
+          : content
         
         const { text: analysisJson } = await generateText({
           model: openai("gpt-3.5-turbo"),
@@ -134,10 +140,10 @@ export async function POST(request: NextRequest) {
           
           Analyze the following learning material about ${lesson?.topic || "the subject"} and create:
           1. A concise summary of the main ideas
-          2. A list of 5-10 key concepts that students should understand
+          2. A list of 2-3 key concepts that students should understand, the key concepts should be high-level concepts that are important to the material
           
           LEARNING MATERIAL:
-          ${content}
+          ${trimmedContent}
           
           Return your analysis as a JSON object with the following structure:
           {
@@ -152,16 +158,78 @@ export async function POST(request: NextRequest) {
           Only return the JSON object, nothing else.`,
         })
         
-        // Parse the AI response
-        const analysis = JSON.parse(analysisJson)
-        aiSummary = analysis.summary
-        keyConcepts = analysis.key_concepts
+        // Store the raw AI response
+        rawAiResponse = analysisJson;
+        console.log("Raw AI response:", analysisJson.substring(0, 300));
         
-        console.log("AI analysis generated successfully")
+        // Parse the AI response with safer error handling
+        try {
+          // Clean the response - sometimes the AI might add extra text around the JSON
+          let jsonStr = analysisJson.trim();
+          // Find the first '{' and the last '}' to extract just the JSON part
+          const startIdx = jsonStr.indexOf('{');
+          const endIdx = jsonStr.lastIndexOf('}');
+          
+          if (startIdx >= 0 && endIdx > startIdx) {
+            jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+          }
+          
+          const analysis = JSON.parse(jsonStr);
+          
+          // Validate the structure of the response
+          if (typeof analysis.summary === 'string') {
+            aiSummary = analysis.summary;
+            
+            // Handle different potential formats of key_concepts
+            if (Array.isArray(analysis.key_concepts)) {
+              // Make sure each item has both concept and description
+              keyConcepts = analysis.key_concepts.map((item: any) => {
+                if (typeof item === 'string') {
+                  // If it's just a string, convert to proper format
+                  return { concept: item, description: "" };
+                } else if (typeof item === 'object' && item !== null) {
+                  // Ensure required properties exist
+                  return {
+                    concept: item.concept || item.name || item.key || item.title || "Unnamed Concept",
+                    description: item.description || item.desc || item.explanation || ""
+                  };
+                } else {
+                  // Fallback for unexpected format
+                  return { concept: "Unknown Concept", description: "" };
+                }
+              });
+            } else if (typeof analysis.key_concepts === 'object' && analysis.key_concepts !== null) {
+              // Handle if key_concepts is an object instead of array
+              keyConcepts = Object.entries(analysis.key_concepts).map(([key, value]) => ({
+                concept: key,
+                description: typeof value === 'string' ? value : JSON.stringify(value)
+              }));
+            } else {
+              // Fallback if key_concepts is missing or invalid
+              console.error("Invalid key_concepts format:", typeof analysis.key_concepts);
+              keyConcepts = [{concept: "No key concepts available", description: ""}];
+            }
+            
+            console.log("AI analysis generated successfully with", keyConcepts.length, "key concepts");
+          } else {
+            console.error("AI response missing expected fields:", analysisJson.substring(0, 200))
+            aiSummary = "Error: Could not generate summary from AI response"
+            keyConcepts = [{concept: "Error processing response", description: ""}];
+          }
+        } catch (parseError) {
+          console.error("Failed to parse AI response:", parseError, "Response:", analysisJson.substring(0, 200))
+          aiSummary = "Error: Could not parse AI response"
+          keyConcepts = [{concept: "Error parsing AI response", description: ""}];
+        }
       } catch (aiError: any) {
         console.error("Error generating AI analysis:", aiError)
-        // Continue without AI analysis
+        aiSummary = "Error generating analysis: " + (aiError.message || "Unknown error")
+        keyConcepts = []
       }
+    } else {
+      console.log("Content too short or missing, skipping AI analysis")
+      aiSummary = "No content analysis available"
+      keyConcepts = []
     }
 
     // Save material metadata to database
@@ -177,6 +245,7 @@ export async function POST(request: NextRequest) {
         file_name: fileName,
         ai_summary: aiSummary,
         key_concepts: keyConcepts,
+        raw_ai_summary: rawAiResponse,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
