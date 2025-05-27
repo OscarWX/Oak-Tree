@@ -38,7 +38,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
 
   // State for showing/hiding sidebar and notes
   const [showSidebar, setShowSidebar] = useState(true)
-  const [showNotes, setShowNotes] = useState(false)
+  // const [showNotes, setShowNotes] = useState(false)
 
   // Find active lesson
   const activeLesson = lessons.find((lesson) => lesson.id === selectedLessonId) || null
@@ -116,7 +116,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
     setSelectedLessonId(lessonId)
 
     // Hide notes panel when changing lessons
-    setShowNotes(false)
+    // setShowNotes(false)
 
     // Auto-hide sidebar on mobile
     if (window.innerWidth < 768) {
@@ -299,6 +299,8 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Removed Notes button since we've integrated pre-class reading in the chat interface */}
+              {/* 
               <Button
                 variant={showNotes ? "secondary" : "outline"}
                 size="sm"
@@ -309,6 +311,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
                 <FileText className="h-3.5 w-3.5" />
                 {showNotes ? "Hide Notes" : "View Notes"}
               </Button>
+              */}
               <Button variant="ghost" size="sm" onClick={returnToStudentSelection}>
                 Switch Student
               </Button>
@@ -330,7 +333,8 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
           )}
         </div>
 
-        {/* Notes Panel (conditionally rendered) */}
+        {/* Notes Panel (conditionally rendered) - removed since we've integrated pre-class reading in chat */}
+        {/* 
         {showNotes && activeLesson && (
           <div className="w-80 border-l bg-muted/10 h-[calc(100vh-48px)]">
             <NotesPanel
@@ -341,6 +345,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
             />
           </div>
         )}
+        */}
       </div>
     </div>
   )

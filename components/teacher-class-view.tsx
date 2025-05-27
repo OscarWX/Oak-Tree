@@ -79,17 +79,9 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
 
   // Get understanding level text and color
   const getUnderstandingLevel = (lessonId: string) => {
-    // This would ideally be fetched from actual session data
-    // For now, we're using a deterministic placeholder based on the lesson ID
-    const hash = lessonId.split("").reduce((acc, char) => {
-      return acc + char.charCodeAt(0)
-    }, 0)
-
-    const percentage = (hash % 40) + 50 // Random between 50-90%
-
-    if (percentage >= 80) return { text: `Good (${percentage}%)`, color: "text-green-600" }
-    if (percentage >= 65) return { text: `Moderate (${percentage}%)`, color: "text-yellow-600" }
-    return { text: `Needs Review (${percentage}%)`, color: "text-orange-600" }
+    // TODO: Fetch actual understanding data from API
+    // For now, showing placeholder text
+    return { text: "View Details", color: "text-blue-600" }
   }
 
   if (error) {
@@ -115,7 +107,7 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <Users className="h-4 w-4" />
-            <span>3 Students</span> {/* This would be fetched from actual enrollment data */}
+            <span>Students enrolled</span>
           </div>
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <BookOpen className="h-4 w-4" />
@@ -123,7 +115,7 @@ export default function TeacherClassView({ course, onLessonClick }: TeacherClass
           </div>
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <BarChart2 className="h-4 w-4" />
-            <span>Avg. Progress: 68%</span> {/* This would be calculated from actual session data */}
+            <span>Understanding Analytics</span>
           </div>
         </div>
       </div>

@@ -1,6 +1,34 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const lessonId = params.id
+
+    const { data: lesson, error } = await supabaseAdmin
+      .from("lessons")
+      .select("*, courses(*)")
+      .eq("id", lessonId)
+      .single()
+
+    if (error) {
+      console.error("Error fetching lesson:", error)
+      return NextResponse.json({ error: "Lesson not found" }, { status: 404 })
+    }
+
+    return NextResponse.json({ lesson })
+  } catch (error: any) {
+    console.error("Error fetching lesson:", error)
+    return NextResponse.json(
+      { error: error.message || "Unknown error" },
+      { status: 500 }
+    )
+  }
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
