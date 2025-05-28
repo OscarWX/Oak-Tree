@@ -3,6 +3,21 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
 
+interface ConceptQuestion {
+  concept: string
+  conceptDescription: string
+  multipleChoiceQuestion: string
+  options: {
+    a: string
+    b: string
+    c: string
+  }
+  correctOption: 'a' | 'b' | 'c'
+  correctExplanation: string
+  examplePrompt: string
+  exampleHint: string
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -40,7 +55,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to fetch lesson details" }, { status: 500 })
     }
 
-    // Check if lesson has key concepts - chat is only available when concepts exist
+    // Check if lesson has key concepts
     if (!lesson.key_concepts || !Array.isArray(lesson.key_concepts) || lesson.key_concepts.length === 0) {
       return NextResponse.json({ 
         error: "Chat is not available for this lesson yet. The teacher needs to generate lesson content with key concepts first.",
@@ -59,7 +74,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract context from materials
-    let materialContext = "";
+    let materialContext = ""
     if (materials && materials.length > 0) {
       materialContext = materials
         .map(m => {
@@ -77,10 +92,10 @@ export async function POST(request: NextRequest) {
         .join("\n\n")
     }
 
-    // Generate fill-in-the-blank questions for all concepts
+    // Generate standardized questions for each concept
     const { text: questionsJson } = await generateText({
-      model: openai("gpt-3.5-turbo"),
-      prompt: `You are an educational assistant creating conversational fill-in-the-blank questions for students.
+      model: openai("gpt-4"),
+      prompt: `You are Chirpy, an enthusiastic and friendly educational assistant creating a standardized learning session. For each concept, create a multiple-choice question followed by an example request.
 
 LESSON TOPIC: ${lesson.topic}
 LESSON SUMMARY: ${lesson.ai_summary || "No summary available"}
@@ -95,62 +110,58 @@ ${lesson.key_concepts.map((kc: any, index: number) => {
 ADDITIONAL CONTEXT:
 ${materialContext}
 
-Create conversational questions where Chirpy (a curious bird) asks the student about concepts, and the student responds with explanations. Format this as a natural conversation:
+For each concept, create a standardized interaction following this EXACT pattern:
 
-IMPORTANT RULES:
-1. Chirpy should ask "What is [concept]?" or "Can you explain [concept]?"
-2. The student's response should be INCOMPLETE with a _____ blank to fill
-3. The answer should be 4-12 words that fill in the blank
-4. Make it feel like a real conversation between friends
-5. The student response MUST be incomplete and end with _____ or have _____ in the middle
+1. Multiple Choice Question:
+   - Start with: "Hi! I heard in your class you learned about [Concept Name]. Can you tell me what it is?"
+   - Provide 3 options (a, b, c) where one is correct and two are plausible but incorrect
+   - Make options concise but clear
 
-EXAMPLE:
-- Concept: "Photosynthesis"
-- Chirpy question: "What is photosynthesis?"
-- Student response: "It's the process where _____" (INCOMPLETE - needs filling)
-- Student answer: "plants use sunlight and water to make food" (fills the blank)
+2. Example Request:
+   - After the correct answer, transition naturally without saying "Yes! That's right!"
+   - Use a smooth transition like: "Oh, I know! That reminds me... [short real-world example]. That's an example of [concept], right? But I need another one. Can you think of one?"
+   - Provide a hint that helps students think of examples
 
-ANOTHER EXAMPLE:
-- Concept: "Gravity"
-- Chirpy question: "What is gravity?"
-- Student response: "It's the force that _____" (INCOMPLETE - needs filling)
-- Student answer: "pulls objects toward the center of Earth"
-
-DO NOT create complete sentences like "In addition, the order of numbers does not affect the result"
-DO create incomplete sentences like "It's when _____ doesn't change the result"
+IMPORTANT:
+- Keep Chirpy's personality enthusiastic and encouraging
+- Make incorrect options believable but clearly distinguishable from the correct answer
+- Examples should be relatable to students
+- Keep language simple and conversational
+- For correctExplanation, DON'T say "Yes! That's right!" - instead use natural transitions like:
+  * "Exactly!"
+  * "That's it!"
+  * "Perfect!"
+  * "You got it!"
+  * "Spot on!"
+  * Or just move directly to the example without explicit confirmation
 
 Return a JSON object with this structure:
 {
   "questions": [
     {
       "concept": "concept name",
-      "chirpyQuestion": "What is [concept]? I'm really curious about this!",
-      "studentResponse": "It's the rule that _____",
-      "answer": "lets you change the order when adding numbers",
-      "hint": "a helpful hint if the student struggles"
+      "conceptDescription": "brief description if available",
+      "multipleChoiceQuestion": "Hi! I heard in your class you learned about [concept]. Can you tell me what it is?",
+      "options": {
+        "a": "option a text",
+        "b": "option b text",
+        "c": "option c text"
+      },
+      "correctOption": "a|b|c",
+      "correctExplanation": "Natural transition or brief acknowledgment (NOT 'Yes! That's right!')",
+      "examplePrompt": "Oh, I know! That reminds me... [example]. That's an example of [concept], right? But I need another one. Can you think of one?",
+      "exampleHint": "Think of another real-life example that shows [concept]"
     }
   ]
 }
 
-CRITICAL: The studentResponse MUST be incomplete and contain exactly one _____ blank.
-The answer fills in that blank to complete the sentence.
-Make the conversation natural and friendly.
 Only return the JSON object, nothing else.`
     })
 
     // Parse the AI response
-    let questions = []
+    let questions: ConceptQuestion[] = []
     try {
-      // Clean the response to extract JSON
-      let jsonStr = questionsJson.trim()
-      const startIdx = jsonStr.indexOf('{')
-      const endIdx = jsonStr.lastIndexOf('}')
-      
-      if (startIdx >= 0 && endIdx > startIdx) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1)
-      }
-      
-      const parsed = JSON.parse(jsonStr)
+      const parsed = JSON.parse(questionsJson.trim())
       questions = parsed.questions || []
     } catch (parseError) {
       console.error("Failed to parse questions JSON:", parseError)
@@ -158,10 +169,17 @@ Only return the JSON object, nothing else.`
     }
 
     // Save the session data with questions
+    const sessionState = {
+      questions,
+      currentQuestionIndex: 0,
+      currentPhase: 'multiple_choice' as 'multiple_choice' | 'example',
+      conversationHistory: []
+    }
+
     const { error: updateError } = await supabaseAdmin
       .from("chat_sessions")
       .update({ 
-        summary: JSON.stringify({ questions, currentQuestionIndex: 0 })
+        summary: JSON.stringify(sessionState)
       })
       .eq("id", sessionData.id)
 
@@ -169,12 +187,33 @@ Only return the JSON object, nothing else.`
       console.error("Error updating session with questions:", updateError)
     }
 
+    // Save Chirpy's initial greeting as the first message
+    const firstQuestion = questions[0]
+    if (firstQuestion) {
+      await supabaseAdmin.from("chat_messages").insert({
+        session_id: sessionData.id,
+        sender_type: "ai",
+        content: JSON.stringify({
+          type: 'multiple_choice',
+          message: firstQuestion.multipleChoiceQuestion,
+          options: firstQuestion.options,
+          concept: firstQuestion.concept,
+          questionIndex: 0
+        }),
+        timestamp: new Date().toISOString()
+      })
+    }
+
     return NextResponse.json({ 
       success: true,
-      session: sessionData.id,
-      questions: questions,
-      currentQuestionIndex: 0,
-      totalQuestions: questions.length
+      sessionId: sessionData.id,
+      currentQuestion: firstQuestion,
+      currentPhase: 'multiple_choice',
+      progress: {
+        current: 1,
+        total: questions.length,
+        percentage: 0
+      }
     })
   } catch (error: any) {
     console.error("Error starting chat session:", error)

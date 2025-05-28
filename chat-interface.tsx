@@ -4,9 +4,10 @@ import type React from "react"
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { CheckCircle, XCircle, BookOpen, Lightbulb, Trophy, ArrowRight, RotateCcw, Loader2, Send } from "lucide-react"
+import { CheckCircle, XCircle, BookOpen, Lightbulb, Trophy, ArrowRight, RotateCcw, Loader2, Send, MessageCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLesson } from "@/hooks/use-lesson"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -18,57 +19,59 @@ interface ChatInterfaceProps {
   lessonId: string
 }
 
-interface Question {
+interface ConceptQuestion {
   concept: string
-  chirpyQuestion: string
-  studentResponse: string
-  answer: string
-  hint: string
+  conceptDescription: string
+  multipleChoiceQuestion: string
+  options: {
+    a: string
+    b: string
+    c: string
+  }
+  correctOption: 'a' | 'b' | 'c'
+  correctExplanation: string
+  examplePrompt: string
+  exampleHint: string
 }
 
-interface SessionData {
-  sessionId: string
-  questions: Question[]
-  currentQuestionIndex: number
-  totalQuestions: number
+interface ChatMessage {
+  id: string
+  type: 'chirpy' | 'student' | 'sage'
+  content: string
+  options?: { a: string; b: string; c: string }
+  selectedOption?: string
+  isCorrect?: boolean
+  timestamp: Date
 }
 
 export default function ChatInterface({ studentId, studentName, lessonId }: ChatInterfaceProps) {
-  const [sessionData, setSessionData] = useState<SessionData | null>(null)
-  const [currentAnswer, setCurrentAnswer] = useState("")
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [currentQuestion, setCurrentQuestion] = useState<ConceptQuestion | null>(null)
+  const [currentPhase, setCurrentPhase] = useState<'multiple_choice' | 'example'>('multiple_choice')
+  const [selectedOption, setSelectedOption] = useState<string | null>(null)
+  const [exampleText, setExampleText] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const [feedback, setFeedback] = useState<string | null>(null)
-  const [showHint, setShowHint] = useState(false)
-  const [hint, setHint] = useState<string | null>(null)
-  const [isCorrect, setIsCorrect] = useState<boolean | null>(null)
-  const [showCorrectAnswer, setShowCorrectAnswer] = useState(false)
-  const [correctAnswer, setCorrectAnswer] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 })
   const [isComplete, setIsComplete] = useState(false)
   const [showReading, setShowReading] = useState(true)
-  const [isCleaningHistory, setIsCleaningHistory] = useState(false)
-  const [conversationHistory, setConversationHistory] = useState<Array<{
-    chirpyQuestion: string
-    studentResponse: string
-    studentAnswer: string
-    concept: string
-  }>>([])
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [showHint, setShowHint] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Fetch lesson details
   const { lesson, isLoading: lessonLoading } = useLesson(lessonId)
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [chatMessages])
 
   // Start session when component mounts
   useEffect(() => {
     startLearningSession()
   }, [studentId, lessonId])
-
-  // Focus input when question changes
-  useEffect(() => {
-    if (sessionData && inputRef.current) {
-      inputRef.current.focus()
-    }
-  }, [sessionData?.currentQuestionIndex])
 
   const startLearningSession = async () => {
     setIsLoading(true)
@@ -91,18 +94,21 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
         throw new Error(data.error || "Failed to start learning session")
       }
 
-      setSessionData({
-        sessionId: data.session,
-        questions: data.questions,
-        currentQuestionIndex: data.currentQuestionIndex,
-        totalQuestions: data.totalQuestions
-      })
+      setSessionId(data.sessionId)
+      setCurrentQuestion(data.currentQuestion)
+      setCurrentPhase(data.currentPhase)
+      setProgress(data.progress)
 
-      setProgress({
-        current: 1,
-        total: data.totalQuestions,
-        percentage: 0
-      })
+      // Add Chirpy's initial greeting
+      if (data.currentQuestion) {
+        setChatMessages([{
+          id: Date.now().toString(),
+          type: 'chirpy',
+          content: data.currentQuestion.multipleChoiceQuestion,
+          options: data.currentQuestion.options,
+          timestamp: new Date()
+        }])
+      }
 
     } catch (error) {
       console.error("Error starting session:", error)
@@ -112,10 +118,21 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
     }
   }
 
-  const submitAnswer = async () => {
-    if (!sessionData || !currentAnswer.trim()) return
+  const submitMultipleChoice = async () => {
+    if (!sessionId || !selectedOption || !currentQuestion) return
 
-    setIsLoading(true)
+    setIsSubmitting(true)
+    
+    // Add student's answer to chat
+    const studentMessage: ChatMessage = {
+      id: Date.now().toString(),
+      type: 'student',
+      content: `Option ${selectedOption.toUpperCase()}: ${currentQuestion.options[selectedOption as keyof typeof currentQuestion.options]}`,
+      selectedOption,
+      timestamp: new Date()
+    }
+    setChatMessages(prev => [...prev, studentMessage])
+
     try {
       const response = await fetch("/api/chat/message", {
         method: "POST",
@@ -123,9 +140,9 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sessionId: sessionData.sessionId,
-          answer: currentAnswer.trim(),
-          questionIndex: sessionData.currentQuestionIndex,
+          sessionId,
+          answer: selectedOption,
+          answerType: 'multiple_choice'
         }),
       })
 
@@ -135,67 +152,160 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
         throw new Error(data.error || "Failed to submit answer")
       }
 
-      // Update feedback and state
-      setIsCorrect(data.isCorrect)
-      setFeedback(data.feedback)
-      setHint(data.hint)
-      setShowHint(!!data.hint)
-      setCorrectAnswer(data.correctAnswer)
-      setShowCorrectAnswer(!data.isCorrect)
-      setProgress(data.progress)
-      setIsComplete(data.isComplete)
+      // Add Sage's feedback
+      const feedbackMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'sage',
+        content: data.feedback,
+        isCorrect: data.isCorrect,
+        timestamp: new Date()
+      }
+      setChatMessages(prev => [...prev, feedbackMessage])
 
-      // If correct, move to next question after a delay
-      if (data.isCorrect && !data.isComplete) {
+      if (data.isCorrect) {
+        // Move to example phase
+        setCurrentPhase('example')
+        setSelectedOption(null)
+        
+        // Add example prompt after a short delay
         setTimeout(() => {
-          moveToNextQuestion(data.nextQuestionIndex)
-        }, 2000)
+          const exampleMessage: ChatMessage = {
+            id: (Date.now() + 2).toString(),
+            type: 'chirpy',
+            content: data.examplePrompt,
+            timestamp: new Date()
+          }
+          setChatMessages(prev => [...prev, exampleMessage])
+          
+          if (data.hint) {
+            setShowHint(true)
+          }
+        }, 1500)
+      } else {
+        // Show hint for wrong answer and allow retry
+        if (data.hint) {
+          setTimeout(() => {
+            const hintMessage: ChatMessage = {
+              id: (Date.now() + 2).toString(),
+              type: 'sage',
+              content: `💡 ${data.hint}`,
+              timestamp: new Date()
+            }
+            setChatMessages(prev => [...prev, hintMessage])
+            
+            // After showing hint, show the question options again for retry
+            setTimeout(() => {
+              const retryMessage: ChatMessage = {
+                id: (Date.now() + 3).toString(),
+                type: 'sage',
+                content: "Try again! " + currentQuestion.multipleChoiceQuestion,
+                options: currentQuestion.options,
+                timestamp: new Date()
+              }
+              setChatMessages(prev => [...prev, retryMessage])
+              setSelectedOption(null) // Reset selection for retry
+            }, 1000)
+          }, 1000)
+        }
       }
 
     } catch (error) {
       console.error("Error submitting answer:", error)
       toast.error(`Failed to submit answer: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
-      setIsLoading(false)
+      setIsSubmitting(false)
     }
   }
 
-  const moveToNextQuestion = (nextIndex: number) => {
-    if (!sessionData || !currentQuestion) return
+  const submitExample = async () => {
+    if (!sessionId || !exampleText.trim() || !currentQuestion) return
 
-    // Add the completed exchange to conversation history
-    const completedExchange = {
-      chirpyQuestion: currentQuestion.chirpyQuestion,
-      studentResponse: currentQuestion.studentResponse,
-      studentAnswer: currentAnswer,
-      concept: currentQuestion.concept
+    setIsSubmitting(true)
+    
+    // Add student's example to chat
+    const studentMessage: ChatMessage = {
+      id: Date.now().toString(),
+      type: 'student',
+      content: exampleText.trim(),
+      timestamp: new Date()
     }
-    
-    setConversationHistory(prev => [...prev, completedExchange])
+    setChatMessages(prev => [...prev, studentMessage])
 
-    setSessionData({
-      ...sessionData,
-      currentQuestionIndex: nextIndex
-    })
-    
-    // Reset state for next question
-    setCurrentAnswer("")
-    setFeedback(null)
-    setShowHint(false)
-    setHint(null)
-    setIsCorrect(null)
-    setShowCorrectAnswer(false)
-    setCorrectAnswer(null)
+    try {
+      const response = await fetch("/api/chat/message", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionId,
+          answer: exampleText.trim(),
+          answerType: 'example'
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to submit example")
+      }
+
+      // Add Sage's feedback
+      const feedbackMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'sage',
+        content: data.feedback,
+        isCorrect: data.isCorrect,
+        timestamp: new Date()
+      }
+      setChatMessages(prev => [...prev, feedbackMessage])
+
+      if (data.isCorrect) {
+        setExampleText("")
+        setShowHint(false)
+        
+        if (data.isComplete) {
+          setIsComplete(true)
+          setProgress(data.progress)
+        } else if (data.nextQuestion) {
+          // Move to next concept after a delay
+          setTimeout(() => {
+            setCurrentQuestion(data.nextQuestion)
+            setCurrentPhase('multiple_choice')
+            setProgress(data.progress)
+            
+            const nextQuestionMessage: ChatMessage = {
+              id: (Date.now() + 2).toString(),
+              type: 'chirpy',
+              content: data.nextQuestion.multipleChoiceQuestion,
+              options: data.nextQuestion.options,
+              timestamp: new Date()
+            }
+            setChatMessages(prev => [...prev, nextQuestionMessage])
+          }, 2000)
+        }
+      } else {
+        // Show hint for invalid example
+        if (data.hint && !showHint) {
+          setShowHint(true)
+        }
+      }
+
+    } catch (error) {
+      console.error("Error submitting example:", error)
+      toast.error(`Failed to submit example: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
-  const tryAgain = () => {
-    setCurrentAnswer("")
-    setFeedback(null)
-    setShowHint(false)
-    setHint(null)
-    setIsCorrect(null)
-    setShowCorrectAnswer(false)
-    setCorrectAnswer(null)
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey && !isSubmitting) {
+      e.preventDefault()
+      if (currentPhase === 'example' && exampleText.trim()) {
+        submitExample()
+      }
+    }
   }
 
   const cleanConversationHistory = async () => {
@@ -203,7 +313,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       return
     }
 
-    setIsCleaningHistory(true)
+    setIsLoading(true)
     try {
       const response = await fetch("/api/chat/clean", {
         method: "POST",
@@ -220,17 +330,15 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       }
 
       // Reset all state
-      setSessionData(null)
-      setCurrentAnswer("")
-      setFeedback(null)
-      setShowHint(false)
-      setHint(null)
-      setIsCorrect(null)
-      setShowCorrectAnswer(false)
-      setCorrectAnswer(null)
+      setSessionId(null)
+      setCurrentQuestion(null)
+      setCurrentPhase('multiple_choice')
+      setSelectedOption(null)
+      setExampleText("")
       setProgress({ current: 0, total: 0, percentage: 0 })
       setIsComplete(false)
-      setConversationHistory([])
+      setChatMessages([])
+      setShowHint(false)
 
       toast.success("Conversation history cleaned successfully! Starting fresh...")
       
@@ -243,34 +351,12 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       console.error("Error cleaning conversation history:", error)
       toast.error(`Failed to clean conversation history: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
-      setIsCleaningHistory(false)
+      setIsLoading(false)
     }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !isLoading && currentAnswer.trim()) {
-      e.preventDefault()
-      submitAnswer()
-    }
-  }
-
-  const startOver = () => {
-    setIsComplete(false)
-    setSessionData(null)
-    setCurrentAnswer("")
-    setFeedback(null)
-    setShowHint(false)
-    setHint(null)
-    setIsCorrect(null)
-    setShowCorrectAnswer(false)
-    setCorrectAnswer(null)
-    setProgress({ current: 0, total: 0, percentage: 0 })
-    setConversationHistory([])
-    startLearningSession()
   }
 
   // Loading state
-  if (isLoading && !sessionData) {
+  if (isLoading && !sessionId) {
     return (
       <div className="flex-1 flex flex-col p-4">
         <div className="flex-1 flex items-center justify-center">
@@ -283,7 +369,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
     )
   }
 
-  if (!sessionData) {
+  if (!sessionId) {
     return (
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="text-center max-w-md">
@@ -296,8 +382,6 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       </div>
     )
   }
-
-  const currentQuestion = sessionData.questions[sessionData.currentQuestionIndex]
 
   return (
     <div className="flex-1 flex flex-col h-full">
@@ -344,11 +428,11 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
         </div>
       )}
 
-      {/* Main Learning Interface */}
-      <div className="flex-1 p-4 overflow-y-auto">
-        <div className="max-w-4xl mx-auto space-y-6">
+      {/* Main Chat Interface */}
+      <div className="flex-1 flex flex-col p-4 overflow-hidden">
+        <div className="max-w-4xl mx-auto w-full flex flex-col h-full">
           {!showReading && (
-            <div className="text-center">
+            <div className="text-center mb-4">
               <Button 
                 variant="outline" 
                 size="sm" 
@@ -362,12 +446,12 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
           )}
 
           {/* Progress Bar */}
-          <Card>
+          <Card className="mb-4">
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <img src="/avatars/chirpy.png" alt="Chirpy" className="h-6 w-6 rounded-full" />
-                  <span className="text-sm font-medium">Learning Progress</span>
+                  <MessageCircle className="h-5 w-5 text-blue-600" />
+                  <span className="text-sm font-medium">Learning with Chirpy</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-muted-foreground">
@@ -375,22 +459,13 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
                   </span>
                   <Button
                     onClick={cleanConversationHistory}
-                    disabled={isCleaningHistory || isLoading}
+                    disabled={isLoading || isSubmitting}
                     variant="outline"
                     size="sm"
                     className="text-xs text-red-600 border-red-200 hover:bg-red-50"
                   >
-                    {isCleaningHistory ? (
-                      <>
-                        <div className="animate-spin h-3 w-3 border-2 border-red-600 rounded-full border-t-transparent mr-1"></div>
-                        Resetting...
-                      </>
-                    ) : (
-                      <>
-                        <RotateCcw className="h-3 w-3 mr-1" />
-                        Reset Progress
-                      </>
-                    )}
+                    <RotateCcw className="h-3 w-3 mr-1" />
+                    Reset Progress
                   </Button>
                 </div>
               </div>
@@ -398,220 +473,185 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
             </CardContent>
           </Card>
 
-          {/* Completion Screen */}
-          {isComplete ? (
-            <Card className="border-green-200 bg-green-50">
-              <CardContent className="p-8 text-center">
-                <Trophy className="h-16 w-16 text-green-600 mx-auto mb-4" />
-                <h2 className="text-2xl font-bold text-green-800 mb-2">Congratulations!</h2>
-                <p className="text-green-700 mb-4">
-                  You've completed all the concepts for this lesson. Great job learning about {lesson?.topic}!
-                </p>
-                <div className="flex items-center justify-center gap-2 text-sm text-green-600 mb-6">
-                  <img src="/avatars/chirpy.png" alt="Chirpy" className="h-5 w-5 rounded-full" />
-                  <span>Chirpy is proud of your progress!</span>
-                </div>
-                <Button
-                  onClick={startOver}
-                  disabled={isCleaningHistory}
-                  variant="outline"
-                  className="text-green-700 border-green-300 hover:bg-green-100"
-                >
-                  {isCleaningHistory ? (
-                    <>
-                      <div className="animate-spin h-4 w-4 border-2 border-green-600 rounded-full border-t-transparent mr-2"></div>
-                      Resetting...
-                    </>
-                  ) : (
-                    <>
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      Start Over
-                    </>
+          {/* Chat Messages Area */}
+          <div className="flex-1 overflow-y-auto mb-4 space-y-4 min-h-0">
+            {chatMessages.map((message) => (
+              <div
+                key={message.id}
+                className={cn(
+                  "flex gap-3",
+                  message.type === 'student' ? "justify-end" : "justify-start"
+                )}
+              >
+                {message.type === 'chirpy' && (
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-blue-600 text-sm">🐦</span>
+                  </div>
+                )}
+                
+                {message.type === 'sage' && (
+                  <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-purple-600 text-sm">🦉</span>
+                  </div>
+                )}
+                
+                <div
+                  className={cn(
+                    "rounded-lg p-4 max-w-md",
+                    message.type === 'chirpy' 
+                      ? "bg-blue-50 text-gray-800" 
+                      : message.type === 'sage'
+                      ? "bg-purple-50 text-gray-800"
+                      : "bg-green-50 text-gray-800"
                   )}
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <>
-              {/* Conversation History */}
-              {conversationHistory.length > 0 && (
-                <div className="space-y-4">
-                  {conversationHistory.map((exchange, index) => (
-                    <div key={index} className="space-y-3">
-                      {/* Chirpy's Question */}
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                          <span className="text-blue-600 text-sm">🐦</span>
+                >
+                  {message.type === 'chirpy' && (
+                    <p className="text-blue-800 font-medium text-sm mb-1">Chirpy</p>
+                  )}
+                  {message.type === 'sage' && (
+                    <p className="text-purple-800 font-medium text-sm mb-1">Sage</p>
+                  )}
+                  {message.type === 'student' && (
+                    <p className="text-green-800 font-medium text-sm mb-1">You</p>
+                  )}
+                  
+                  <p className="whitespace-pre-wrap">{message.content}</p>
+                  
+                  {/* Multiple choice options */}
+                  {message.options && (
+                    <div className="mt-3 space-y-2">
+                      {Object.entries(message.options).map(([key, value]) => (
+                        <div
+                          key={key}
+                          className={cn(
+                            "p-3 rounded-md border cursor-pointer transition-colors",
+                            selectedOption === key
+                              ? message.type === 'sage' 
+                                ? "border-purple-500 bg-purple-50"
+                                : "border-blue-500 bg-blue-50"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                          )}
+                          onClick={() => !isSubmitting && setSelectedOption(key)}
+                        >
+                          <span className="font-medium">{key.toUpperCase()})</span> {value}
                         </div>
-                        <div className="bg-blue-50 rounded-lg p-4 max-w-md">
-                          <p className="text-blue-800 font-medium text-sm">Chirpy</p>
-                          <p className="text-gray-700">{exchange.chirpyQuestion}</p>
-                        </div>
-                      </div>
-
-                      {/* Student's Response */}
-                      <div className="flex items-start gap-3 justify-end">
-                        <div className="bg-green-50 rounded-lg p-4 max-w-md">
-                          <p className="text-green-800 font-medium text-sm">You</p>
-                          <p className="text-gray-700">
-                            {exchange.studentResponse.replace('_____', exchange.studentAnswer)}
-                          </p>
-                        </div>
-                        <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                          <span className="text-green-600 text-sm">👤</span>
-                        </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
+                  
+                  {/* Feedback indicators */}
+                  {message.isCorrect !== undefined && (
+                    <div className={cn(
+                      "flex items-center gap-2 mt-2",
+                      message.isCorrect ? "text-green-600" : "text-red-600"
+                    )}>
+                      {message.isCorrect ? (
+                        <CheckCircle className="h-4 w-4" />
+                      ) : (
+                        <XCircle className="h-4 w-4" />
+                      )}
+                    </div>
+                  )}
+                </div>
+                
+                {message.type === 'student' && (
+                  <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-green-600 text-sm">👤</span>
+                  </div>
+                )}
+              </div>
+            ))}
+            
+            {/* Completion message */}
+            {isComplete && (
+              <Card className="border-green-200 bg-green-50">
+                <CardContent className="p-8 text-center">
+                  <Trophy className="h-16 w-16 text-green-600 mx-auto mb-4" />
+                  <h2 className="text-2xl font-bold text-green-800 mb-2">Congratulations!</h2>
+                  <p className="text-green-700 mb-4">
+                    You've completed all the concepts for this lesson. Great job learning about {lesson?.topic}!
+                  </p>
+                  <div className="flex items-center justify-center gap-2 text-sm text-green-600 mb-6">
+                    <span className="text-blue-600 text-2xl">🐦</span>
+                    <span>Chirpy is proud of your progress!</span>
+                  </div>
+                  <Button
+                    onClick={() => {
+                      setIsComplete(false)
+                      cleanConversationHistory()
+                    }}
+                    variant="outline"
+                    className="text-green-700 border-green-300 hover:bg-green-100"
+                  >
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                    Start Over
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+            
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Input Area */}
+          {!isComplete && currentQuestion && (
+            <div className="border-t pt-4">
+              {currentPhase === 'multiple_choice' && selectedOption && (
+                <div className="flex justify-end mb-4">
+                  <Button
+                    onClick={submitMultipleChoice}
+                    disabled={isSubmitting}
+                    className="bg-blue-600 hover:bg-blue-700"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Submitting...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="h-4 w-4 mr-2" />
+                        Submit Answer
+                      </>
+                    )}
+                  </Button>
                 </div>
               )}
 
-              {/* Current Question */}
-              {currentQuestion && (
-                <div className="space-y-4">
-                  {/* Chirpy's Current Question */}
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                      <span className="text-blue-600 text-sm">🐦</span>
+              {currentPhase === 'example' && (
+                <div className="space-y-3">
+                  {showHint && currentQuestion.exampleHint && (
+                    <div className="flex items-start gap-2 p-3 bg-yellow-50 rounded-md">
+                      <Lightbulb className="h-4 w-4 text-yellow-600 mt-0.5" />
+                      <p className="text-sm text-yellow-800">{currentQuestion.exampleHint}</p>
                     </div>
-                    <div className="bg-blue-50 rounded-lg p-4 max-w-md">
-                      <p className="text-blue-800 font-medium text-sm">Chirpy</p>
-                      <p className="text-gray-700">{currentQuestion.chirpyQuestion}</p>
-                    </div>
-                  </div>
-
-                  {/* Student's Response Input */}
-                  <div className="flex items-start gap-3 justify-end">
-                    <div className="bg-green-50 rounded-lg p-4 max-w-md w-full">
-                      <p className="text-green-800 font-medium text-sm mb-2">You</p>
-                      <div className="text-gray-700">
-                        {currentQuestion.studentResponse.split('_____').map((part, index) => (
-                          <span key={index}>
-                            {part}
-                            {index < currentQuestion.studentResponse.split('_____').length - 1 && (
-                              <input
-                                ref={inputRef}
-                                type="text"
-                                value={currentAnswer}
-                                onChange={(e) => setCurrentAnswer(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && currentAnswer.trim()) {
-                                    submitAnswer()
-                                  }
-                                }}
-                                className="inline-block mx-1 px-2 py-1 border-b-2 border-blue-300 bg-transparent focus:border-blue-500 focus:outline-none min-w-[100px] text-center"
-                                placeholder="your answer"
-                                disabled={isCorrect === true}
-                              />
-                            )}
-                          </span>
-                        ))}
-                      </div>
-
-                      {/* Feedback */}
-                      {feedback && (
-                        <div className={`mt-3 p-3 rounded-lg ${
-                          isCorrect ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                          <div className="flex items-center gap-2">
-                            {isCorrect ? (
-                              <CheckCircle className="w-5 h-5 text-green-600" />
-                            ) : (
-                              <XCircle className="w-5 h-5 text-red-600" />
-                            )}
-                            <span className="font-medium">{feedback}</span>
-                          </div>
-                        </div>
+                  )}
+                  
+                  <div className="flex gap-2">
+                    <Textarea
+                      ref={textareaRef}
+                      value={exampleText}
+                      onChange={(e) => setExampleText(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Type your example here..."
+                      className="flex-1 min-h-[80px] resize-none"
+                      disabled={isSubmitting}
+                    />
+                    <Button
+                      onClick={submitExample}
+                      disabled={!exampleText.trim() || isSubmitting}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      {isSubmitting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
                       )}
-
-                      {/* Hint */}
-                      {showHint && hint && (
-                        <div className="mt-3 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
-                          <div className="flex items-center gap-2">
-                            <Lightbulb className="w-5 h-5 text-yellow-600" />
-                            <span className="font-medium">Hint: {hint}</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Correct Answer */}
-                      {showCorrectAnswer && correctAnswer && (
-                        <div className="mt-3 p-3 bg-blue-100 text-blue-800 rounded-lg">
-                          <div className="flex items-center gap-2">
-                            <BookOpen className="w-5 h-5 text-blue-600" />
-                            <span className="font-medium">Answer: {correctAnswer}</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Action Buttons */}
-                      <div className="mt-4 flex gap-2">
-                        {!isCorrect && currentAnswer.trim() && (
-                          <button
-                            onClick={submitAnswer}
-                            disabled={isLoading}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-                          >
-                            {isLoading ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Send className="w-4 h-4" />
-                            )}
-                            Submit
-                          </button>
-                        )}
-
-                        {!isCorrect && !showHint && (
-                          <button
-                            onClick={() => {
-                              setShowHint(true)
-                              setHint(currentQuestion?.hint || "")
-                            }}
-                            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 flex items-center gap-2"
-                          >
-                            <Lightbulb className="w-4 h-4" />
-                            Get Hint
-                          </button>
-                        )}
-
-                        {!isCorrect && !showCorrectAnswer && (
-                          <button
-                            onClick={() => {
-                              setShowCorrectAnswer(true)
-                              setCorrectAnswer(currentQuestion?.answer || "")
-                            }}
-                            className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 flex items-center gap-2"
-                          >
-                            <BookOpen className="w-4 h-4" />
-                            Show Answer
-                          </button>
-                        )}
-
-                        {isCorrect && (
-                          <button
-                            onClick={() => {
-                              const nextIndex = sessionData.currentQuestionIndex + 1
-                              if (nextIndex >= sessionData.totalQuestions) {
-                                setIsComplete(true)
-                              } else {
-                                moveToNextQuestion(nextIndex)
-                              }
-                            }}
-                            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
-                          >
-                            <ArrowRight className="w-4 h-4" />
-                            Continue
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                      <span className="text-green-600 text-sm">👤</span>
-                    </div>
+                    </Button>
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
