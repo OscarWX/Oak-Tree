@@ -57,6 +57,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
   const [showReading, setShowReading] = useState(true)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [showHint, setShowHint] = useState(false)
+  const [dynamicHint, setDynamicHint] = useState<string>("")
   const chatEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -179,6 +180,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
           
           if (data.hint) {
             setShowHint(true)
+            setDynamicHint(data.hint)
           }
         }, 1500)
       } else {
@@ -263,6 +265,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       if (data.isCorrect) {
         setExampleText("")
         setShowHint(false)
+        setDynamicHint("")
         
         if (data.isComplete) {
           setIsComplete(true)
@@ -286,8 +289,11 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
         }
       } else {
         // Show hint for invalid example
-        if (data.hint && !showHint) {
-          setShowHint(true)
+        if (data.hint) {
+          setDynamicHint(data.hint)
+          if (!showHint) {
+            setShowHint(true)
+          }
         }
       }
 
@@ -339,6 +345,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       setIsComplete(false)
       setChatMessages([])
       setShowHint(false)
+      setDynamicHint("")
 
       toast.success("Conversation history cleaned successfully! Starting fresh...")
       
@@ -620,10 +627,12 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
 
               {currentPhase === 'example' && (
                 <div className="space-y-3">
-                  {showHint && currentQuestion.exampleHint && (
+                  {showHint && (dynamicHint || currentQuestion.exampleHint) && (
                     <div className="flex items-start gap-2 p-3 bg-yellow-50 rounded-md">
                       <Lightbulb className="h-4 w-4 text-yellow-600 mt-0.5" />
-                      <p className="text-sm text-yellow-800">{currentQuestion.exampleHint}</p>
+                      <p className="text-sm text-yellow-800">
+                        {dynamicHint || currentQuestion.exampleHint}
+                      </p>
                     </div>
                   )}
                   

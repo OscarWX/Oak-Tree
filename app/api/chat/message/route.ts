@@ -112,8 +112,50 @@ export async function POST(request: NextRequest) {
         await updateConceptProgress(sessionId, currentQuestion.concept, 'example')
 
       } else {
-        // Wrong answer - Sage provides gentle correction
-        const feedback = getIncorrectFeedback(selectedOption, currentQuestion)
+        // Wrong answer - track attempt and provide dynamic feedback
+        
+        // Track the multiple choice attempt
+        const attemptNumber = await trackMultipleChoiceAttempt(
+          sessionId,
+          session.student_id,
+          session.lesson_id,
+          currentQuestion.concept,
+          selectedOption,
+          currentQuestion.correctOption,
+          false
+        )
+
+        let feedback: string
+        let hint: string
+
+        if (attemptNumber === 1) {
+          // First wrong attempt - provide personalized hint based on their specific choice
+          const dynamicHint = await generateMultipleChoiceDynamicHint(
+            selectedOption,
+            currentQuestion,
+            session.lessons?.topic || ''
+          )
+          
+          feedback = "Not quite! Let me help you think about this."
+          hint = cleanHintText(dynamicHint)
+          
+          // Store the dynamic hint for multiple choice
+          await storeDynamicHintEnhanced(
+            sessionId,
+            session.student_id,
+            session.lesson_id,
+            currentQuestion.concept,
+            `Option ${selectedOption.toUpperCase()}: ${currentQuestion.options[selectedOption as keyof typeof currentQuestion.options]}`,
+            hint,
+            `The correct answer is option ${currentQuestion.correctOption.toUpperCase()}`,
+            'multiple_choice',
+            attemptNumber
+          )
+        } else {
+          // Second or later wrong attempt - give the correct answer directly
+          feedback = "Let me help you with the correct answer."
+          hint = `The correct answer is option ${currentQuestion.correctOption.toUpperCase()}: ${currentQuestion.options[currentQuestion.correctOption]}. ${currentQuestion.correctExplanation}`
+        }
         
         await supabaseAdmin.from("chat_messages").insert({
           session_id: sessionId,
@@ -131,8 +173,8 @@ export async function POST(request: NextRequest) {
           success: true,
           isCorrect: false,
           feedback,
-          hint: `The correct answer is option ${currentQuestion.correctOption.toUpperCase()}: ${currentQuestion.options[currentQuestion.correctOption]}`,
-          tryAgain: true
+          hint,
+          tryAgain: attemptNumber === 1 // Only allow retry on first attempt
         }
 
         // Record needs improvement
@@ -243,6 +285,30 @@ export async function POST(request: NextRequest) {
         // Invalid example - provide helpful feedback
         const feedback = generateExampleFeedback(false, answer, currentQuestion.concept, session.lessons?.topic)
         
+        // Generate dynamic hint based on student's specific answer
+        const dynamicHint = await generateDynamicHint(
+          answer, 
+          currentQuestion.concept, 
+          session.lessons?.topic || '', 
+          currentQuestion.exampleHint
+        )
+        
+        // Ensure we have a clean hint (no JSON formatting, no extra text)
+        const cleanHint = cleanHintText(dynamicHint)
+        
+        // Store the dynamic hint in database
+        await storeDynamicHintEnhanced(
+          sessionId,
+          session.student_id,
+          session.lesson_id,
+          currentQuestion.concept,
+          answer,
+          cleanHint,
+          currentQuestion.exampleHint,
+          'example',
+          1
+        )
+        
         await supabaseAdmin.from("chat_messages").insert({
           session_id: sessionId,
           sender_type: "ai",
@@ -259,7 +325,7 @@ export async function POST(request: NextRequest) {
           success: true,
           isCorrect: false,
           feedback,
-          hint: currentQuestion.exampleHint,
+          hint: cleanHint,
           tryAgain: true
         }
       }
@@ -291,7 +357,7 @@ async function validateExample(example: string, concept: string, topic: string):
     }
 
     const { text } = await generateText({
-      model: openai("gpt-3.5-turbo"),
+      model: openai("gpt-4"),
       prompt: `You are an educational assessment AI. Determine if the student's example demonstrates understanding of the concept.
 
 TOPIC: ${topic}
@@ -299,35 +365,27 @@ CONCEPT: ${concept}
 STUDENT'S EXAMPLE: ${example}
 
 Evaluation criteria:
-1. The example should be relevant to the concept
-2. It should demonstrate understanding, not just repeat the definition
-3. It can be creative or unconventional as long as it's valid
-4. Accept examples from any context (personal, fictional, scientific, etc.)
-5. The example doesn't need to be perfect, just show basic understanding
-6. For mathematical concepts, the example must be mathematically correct
-7. For properties or rules, the example must actually demonstrate that property/rule
+1. The example should be relevant to the concept and show understanding
+2. Accept creative, real-world, personal, or hypothetical examples
+3. The example doesn't need to be perfect - basic understanding is sufficient
+4. Be GENEROUS in accepting examples that show any connection to the concept
+5. For business/economics concepts, accept practical scenarios even if simplified
+6. For mathematical concepts, the math should be correct
+7. Look for the ESSENCE of the concept, not perfect academic definitions
 
-Examples of VALID responses:
-- Personal experiences that relate to the concept
-- Hypothetical scenarios that illustrate the concept
-- Real-world applications
-- Creative analogies
-- Mathematically correct examples that demonstrate the concept
+Examples for "Interrelatedness of Markets":
+- VALID: "When one bank went bankrupt, it affected other banks" (shows connection/ripple effect)
+- VALID: "When gas prices go up, food prices also increase" (shows market connections)
+- VALID: "Stock market crash affects housing market" (shows interconnection)
+- INVALID: "I like apples" (no connection to market relationships)
+- INVALID: Random text or very short responses
 
-Examples of INVALID responses:
-- Random text or numbers
-- Completely unrelated topics
-- Just restating the concept name
-- Nonsense or very short responses (less than 5 characters)
-- Mathematically incorrect statements
-- Examples that don't actually demonstrate the concept
-- Simple equations that are wrong (like "1+22222=22")
+Examples for "Supply and Demand":
+- VALID: "When concert tickets are limited, prices go up"
+- VALID: "More people wanted the new phone, so it cost more"
+- INVALID: "Economics is hard" (no demonstration of concept)
 
-For the Associative Property of Addition specifically:
-- VALID: "(2+3)+4 = 2+(3+4)" or "When I collect 5 marbles, then 3 more, then 2 more, it's the same as collecting 5, then collecting 3+2 together"
-- INVALID: "1+22222=22" (incorrect math), "2+2=4" (doesn't show associative property), random numbers
-
-Be STRICT with mathematical concepts. The example must be both mathematically correct AND demonstrate the specific concept.
+Be GENEROUS and FLEXIBLE. If the student shows ANY understanding of how the concept works in practice, accept it as VALID.
 
 Respond with only "VALID" or "INVALID" - nothing else.`
     })
@@ -375,6 +433,100 @@ async function updateConceptProgress(sessionId: string, concept: string, phase: 
       })
   } catch (error) {
     console.error("Failed to update concept progress:", error)
+  }
+}
+
+// Helper function to clean hint text from any JSON artifacts
+function cleanHintText(hintText: string): string {
+  if (!hintText) return ""
+  
+  // Remove any JSON formatting that might have slipped through
+  let cleaned = hintText.trim()
+  
+  // Remove JSON object wrapper if present
+  if (cleaned.startsWith('{') && cleaned.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(cleaned)
+      cleaned = parsed.hint || cleaned
+    } catch (e) {
+      // If parsing fails, try to extract hint manually
+      const hintMatch = cleaned.match(/"hint":\s*"([^"]+)"/i)
+      if (hintMatch) {
+        cleaned = hintMatch[1]
+      }
+    }
+  }
+  
+  // Remove any remaining quotes at start/end
+  cleaned = cleaned.replace(/^["']|["']$/g, '')
+  
+  // Unescape any escaped quotes
+  cleaned = cleaned.replace(/\\"/g, '"')
+  
+  return cleaned.trim()
+}
+
+// Generate dynamic hint based on student's specific answer
+async function generateDynamicHint(studentAnswer: string, concept: string, topic: string, originalHint: string): Promise<string> {
+  try {
+    const { text } = await generateText({
+      model: openai("gpt-4"),
+      prompt: `You are an educational AI helping a student who gave an incorrect example. Generate a specific, helpful hint based on their answer.
+
+TOPIC: ${topic}
+CONCEPT: ${concept}
+STUDENT'S ANSWER: ${studentAnswer}
+ORIGINAL HINT: ${originalHint}
+
+Guidelines:
+1. Be encouraging and specific to their answer
+2. Point out what they got right (if anything)
+3. Gently guide them toward a better example
+4. Keep it concise (1-2 sentences)
+5. Use their answer as a starting point for improvement
+6. Be supportive, not critical
+
+IMPORTANT: Respond with ONLY a JSON object in this exact format:
+{
+  "hint": "Your helpful hint here"
+}
+
+Examples:
+- If student said "I like pizza" for "Supply and Demand":
+{
+  "hint": "I can see you're thinking about things you enjoy! Try thinking about what happens to pizza prices when lots of people want it but there aren't many pizzas available."
+}
+
+- If student said "Banks are important" for "Interrelatedness of Markets":
+{
+  "hint": "You're right that banks are important! Now think about what happens to other businesses or markets when a major bank has problems."
+}
+
+- If student said "I don't know" or gave a very vague answer:
+{
+  "hint": "That's okay! Let me help you think about this. ${originalHint.replace(/"/g, '\\"')}"
+}
+
+Generate ONLY the JSON object with the hint:`
+    })
+
+    // Parse the JSON response to extract just the hint
+    try {
+      const response = JSON.parse(text.trim())
+      return response.hint || originalHint
+    } catch (parseError) {
+      console.error("Failed to parse dynamic hint JSON:", parseError)
+      // If JSON parsing fails, try to extract hint from text
+      const hintMatch = text.match(/"hint":\s*"([^"]+)"/i)
+      if (hintMatch) {
+        return hintMatch[1]
+      }
+      // If all else fails, return original hint
+      return originalHint
+    }
+  } catch (error) {
+    console.error("Failed to generate dynamic hint:", error)
+    return originalHint // Fallback to original hint
   }
 }
 
@@ -455,5 +607,172 @@ function generateExampleFeedback(isValid: boolean, example?: string, concept?: s
       "Let's try again! Think about how this concept appears in everyday life or in the subject we're studying."
     ]
     return helpfulFeedbacks[Math.floor(Math.random() * helpfulFeedbacks.length)]
+  }
+}
+
+// Store dynamic hint in database
+async function storeDynamicHint(
+  sessionId: string, 
+  studentId: string, 
+  lessonId: string, 
+  concept: string, 
+  studentAnswer: string, 
+  dynamicHint: string, 
+  originalHint: string
+): Promise<void> {
+  try {
+    await supabaseAdmin.rpc('store_dynamic_hint', {
+      p_session_id: sessionId,
+      p_student_id: studentId,
+      p_lesson_id: lessonId,
+      p_concept: concept,
+      p_student_answer: studentAnswer,
+      p_dynamic_hint: dynamicHint,
+      p_original_hint: originalHint
+    })
+  } catch (error) {
+    console.error("Failed to store dynamic hint:", error)
+    // Don't throw error - this is not critical for the main flow
+  }
+}
+
+// Track multiple choice attempt
+async function trackMultipleChoiceAttempt(
+  sessionId: string,
+  studentId: string,
+  lessonId: string,
+  concept: string,
+  selectedOption: string,
+  correctOption: string,
+  isCorrect: boolean
+): Promise<number> {
+  try {
+    const { data: attempts, error: attemptError } = await supabaseAdmin
+      .from("multiple_choice_attempts")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("student_id", studentId)
+      .eq("lesson_id", lessonId)
+      .eq("concept", concept)
+      .eq("selected_option", selectedOption)
+      .eq("correct_option", correctOption)
+      .eq("is_correct", isCorrect)
+
+    if (attemptError || !attempts || attempts.length === 0) {
+      // If no record exists for this attempt, create a new one
+      await supabaseAdmin.from("multiple_choice_attempts").insert({
+        session_id: sessionId,
+        student_id: studentId,
+        lesson_id: lessonId,
+        concept,
+        selected_option: selectedOption,
+        correct_option: correctOption,
+        is_correct: isCorrect
+      })
+      return 1
+    } else {
+      // If record exists, return the attempt number
+      return attempts.length
+    }
+  } catch (error) {
+    console.error("Failed to track multiple choice attempt:", error)
+    return 1 // Default to first attempt
+  }
+}
+
+// Generate dynamic hint for multiple choice answers
+async function generateMultipleChoiceDynamicHint(
+  selectedOption: string,
+  question: any,
+  topic: string
+): Promise<string> {
+  try {
+    const { text } = await generateText({
+      model: openai("gpt-4"),
+      prompt: `You are an educational AI helping a student who gave an incorrect multiple choice answer. Generate a specific, helpful hint based on their answer.
+
+TOPIC: ${topic}
+CONCEPT: ${question.concept}
+STUDENT'S ANSWER: ${selectedOption}
+
+Guidelines:
+1. Be encouraging and specific to their answer
+2. Point out what they got right (if anything)
+3. Gently guide them toward a better answer
+4. Keep it concise (1-2 sentences)
+5. Use their answer as a starting point for improvement
+6. Be supportive, not critical
+
+IMPORTANT: Respond with ONLY a JSON object in this exact format:
+{
+  "hint": "Your helpful hint here"
+}
+
+Examples:
+- If student said "I like pizza" for "Supply and Demand":
+{
+  "hint": "I can see you're thinking about things you enjoy! Try thinking about what happens to pizza prices when lots of people want it but there aren't many pizzas available."
+}
+
+- If student said "Banks are important" for "Interrelatedness of Markets":
+{
+  "hint": "You're right that banks are important! Now think about what happens to other businesses or markets when a major bank has problems."
+}
+
+- If student said "I don't know" or gave a very vague answer:
+{
+  "hint": "That's okay! Let me help you think about this. ${question.correctExplanation.replace(/"/g, '\\"')}"
+}
+
+Generate ONLY the JSON object with the hint:`
+    })
+
+    // Parse the JSON response to extract just the hint
+    try {
+      const response = JSON.parse(text.trim())
+      return response.hint || question.correctExplanation
+    } catch (parseError) {
+      console.error("Failed to parse dynamic hint JSON:", parseError)
+      // If JSON parsing fails, try to extract hint from text
+      const hintMatch = text.match(/"hint":\s*"([^"]+)"/i)
+      if (hintMatch) {
+        return hintMatch[1]
+      }
+      // If all else fails, return correct explanation
+      return question.correctExplanation
+    }
+  } catch (error) {
+    console.error("Failed to generate dynamic hint:", error)
+    return question.correctExplanation // Fallback to correct explanation
+  }
+}
+
+// Store dynamic hint in database enhanced
+async function storeDynamicHintEnhanced(
+  sessionId: string, 
+  studentId: string, 
+  lessonId: string, 
+  concept: string, 
+  studentAnswer: string, 
+  dynamicHint: string, 
+  originalHint: string,
+  answerType: string,
+  attemptNumber: number
+): Promise<void> {
+  try {
+    await supabaseAdmin.rpc('store_dynamic_hint_enhanced', {
+      p_session_id: sessionId,
+      p_student_id: studentId,
+      p_lesson_id: lessonId,
+      p_concept: concept,
+      p_student_answer: studentAnswer,
+      p_dynamic_hint: dynamicHint,
+      p_original_hint: originalHint,
+      p_answer_type: answerType,
+      p_attempt_number: attemptNumber
+    })
+  } catch (error) {
+    console.error("Failed to store dynamic hint enhanced:", error)
+    // Don't throw error - this is not critical for the main flow
   }
 }
