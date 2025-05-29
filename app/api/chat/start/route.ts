@@ -3,6 +3,9 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
 
+// In-memory lock to prevent race conditions
+const sessionLocks = new Map<string, Promise<any>>()
+
 interface ConceptQuestion {
   concept: string
   conceptDescription: string
@@ -19,94 +22,258 @@ interface ConceptQuestion {
 }
 
 export async function POST(request: NextRequest) {
+  console.log(`[CHAT START] POST request received`)
+  
   try {
     const body = await request.json()
     const { studentId, lessonId } = body
 
+    console.log(`[CHAT START] Request for student ${studentId}, lesson ${lessonId}`)
+
     if (!studentId || !lessonId) {
+      console.log(`[CHAT START] Missing required parameters`)
       return NextResponse.json({ error: "Student ID and Lesson ID are required" }, { status: 400 })
     }
 
-    // Check for existing active session for this student and lesson
-    const { data: existingSession, error: existingError } = await supabaseAdmin
+    // Create a lock key for this student-lesson combination
+    const actualLockKey = `${studentId}-${lessonId}`
+    
+    // If there's already a request in progress for this combination, wait for it
+    if (sessionLocks.has(actualLockKey)) {
+      console.log(`[CHAT START] Waiting for existing request to complete for ${actualLockKey}`)
+      try {
+        const existingResult = await sessionLocks.get(actualLockKey)
+        console.log(`[CHAT START] Returning existing result`)
+        return existingResult
+      } catch (error) {
+        console.error(`[CHAT START] Error waiting for existing request:`, error)
+        // Continue with new request if waiting fails
+      }
+    }
+
+    // Create a new lock for this request
+    console.log(`[CHAT START] Creating new request promise`)
+    const requestPromise = handleChatStartRequest(studentId, lessonId)
+    sessionLocks.set(actualLockKey, requestPromise)
+
+    try {
+      console.log(`[CHAT START] Awaiting request handling`)
+      const result = await requestPromise
+      console.log(`[CHAT START] Request completed successfully`)
+      return result
+    } finally {
+      // Clean up the lock
+      sessionLocks.delete(actualLockKey)
+      console.log(`[CHAT START] Cleaned up lock for ${actualLockKey}`)
+    }
+
+  } catch (error: any) {
+    console.error("ERROR in chat/start POST:", error)
+    console.error("Error stack:", error.stack)
+    
+    // Ensure we always return a proper JSON response
+    try {
+      return NextResponse.json({ 
+        error: error.message || "Internal server error",
+        details: error.stack || "No stack trace available"
+      }, { status: 500 })
+    } catch (responseError) {
+      console.error("Error creating error response:", responseError)
+      // Last resort - return a basic error
+      return new Response(JSON.stringify({ error: "Critical server error" }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+  }
+}
+
+async function handleChatStartRequest(studentId: string, lessonId: string) {
+  console.log(`[CHAT START] Handling request for student ${studentId}, lesson ${lessonId}`)
+  
+  try {
+    // Check for existing session (active or completed) for this student and lesson
+    console.log(`[CHAT START] Querying database for existing sessions`)
+    const { data: sessions, error: sessionsError } = await supabaseAdmin
       .from("chat_sessions")
       .select("*")
       .eq("student_id", studentId)
       .eq("lesson_id", lessonId)
-      .eq("status", "active")
-      .single()
+      .in("status", ["active", "completed"])
+      .order("started_at", { ascending: false })
+      .limit(1)
 
-    let sessionData = existingSession
+    if (sessionsError) {
+      console.error(`[CHAT START] Database error fetching sessions:`, sessionsError)
+      throw new Error(`Database error: ${sessionsError.message}`)
+    }
 
-    // If no existing session, create a new one
-    if (!existingSession || existingError) {
-      const { data: newSession, error: sessionError } = await supabaseAdmin
-        .from("chat_sessions")
-        .insert({
-          student_id: studentId,
-          lesson_id: lessonId,
-          started_at: new Date().toISOString(),
-          status: "active"
-        })
-        .select()
-        .single()
+    console.log(`[CHAT START] Session query result:`, { 
+      found: sessions && sessions.length > 0, 
+      sessionId: sessions?.[0]?.id,
+      status: sessions?.[0]?.status,
+      sessionCount: sessions?.length || 0
+    })
 
-      if (sessionError) {
-        console.error("Error creating chat session:", sessionError)
-        return NextResponse.json({ error: sessionError.message }, { status: 500 })
+    let sessionData = sessions && sessions.length > 0 ? sessions[0] : null
+
+    // If we have a completed session, return it as completed
+    if (sessionData && sessionData.status === "completed") {
+      console.log(`[CHAT START] Found completed session ${sessionData.id}`)
+      
+      // Parse session state to get progress
+      let sessionState: any = null
+      if (sessionData.summary) {
+        try {
+          sessionState = JSON.parse(sessionData.summary)
+          console.log(`[CHAT START] Parsed completed session state successfully`)
+        } catch (e) {
+          console.error(`[CHAT START] Failed to parse completed session state:`, e)
+        }
       }
 
-      sessionData = newSession
+      const response = {
+        success: true,
+        sessionId: sessionData.id,
+        currentQuestion: null,
+        currentPhase: 'completed',
+        progress: {
+          current: sessionState?.questions?.length || 0,
+          total: sessionState?.questions?.length || 0,
+          percentage: 100
+        },
+        resumed: true,
+        isCompleted: true
+      }
+      
+      console.log(`[CHAT START] Returning completed session response`)
+      return NextResponse.json(response)
+    }
+
+    // If no active session exists, create a new one
+    if (!sessionData || sessionData.status !== "active") {
+      console.log(`[CHAT START] Creating new session for student ${studentId}, lesson ${lessonId}`)
+      
+      try {
+        const { data: newSession, error: sessionError } = await supabaseAdmin
+          .from("chat_sessions")
+          .insert({
+            student_id: studentId,
+            lesson_id: lessonId,
+            started_at: new Date().toISOString(),
+            status: "active"
+          })
+          .select()
+          .single()
+
+        if (sessionError) {
+          console.error("Error creating chat session:", sessionError)
+          throw new Error(`Failed to create session: ${sessionError.message}`)
+        }
+
+        console.log(`[CHAT START] New session created:`, newSession.id)
+        sessionData = newSession
+      } catch (dbError: any) {
+        console.error(`[CHAT START] Database error creating session:`, dbError)
+        throw new Error(`Database error: ${dbError.message}`)
+      }
     }
 
     // Get lesson details and key concepts
-    const { data: lesson, error: lessonError } = await supabaseAdmin
-      .from("lessons")
-      .select("topic, ai_summary, key_concepts")
-      .eq("id", lessonId)
-      .single()
+    console.log(`[CHAT START] Fetching lesson details for lesson ${lessonId}`)
+    let lesson: any
+    try {
+      const { data: lessonData, error: lessonError } = await supabaseAdmin
+        .from("lessons")
+        .select("topic, ai_summary, key_concepts")
+        .eq("id", lessonId)
+        .single()
 
-    if (lessonError) {
-      console.error("Error fetching lesson:", lessonError)
-      return NextResponse.json({ error: "Failed to fetch lesson details" }, { status: 500 })
-    }
+      if (lessonError) {
+        console.error("Error fetching lesson:", lessonError)
+        throw new Error(`Failed to fetch lesson details: ${lessonError.message}`)
+      }
 
-    // Check if lesson has key concepts
-    if (!lesson.key_concepts || !Array.isArray(lesson.key_concepts) || lesson.key_concepts.length === 0) {
-      return NextResponse.json({ 
-        error: "Chat is not available for this lesson yet. The teacher needs to generate lesson content with key concepts first.",
-        chatNotAvailable: true 
-      }, { status: 400 })
+      if (!lessonData) {
+        console.error("Lesson not found")
+        throw new Error("Lesson not found")
+      }
+
+      lesson = lessonData
+      console.log(`[CHAT START] Lesson fetched:`, { 
+        topic: lesson.topic, 
+        hasKeyConcepts: !!(lesson.key_concepts && Array.isArray(lesson.key_concepts) && lesson.key_concepts.length > 0),
+        conceptCount: lesson.key_concepts?.length || 0
+      })
+
+      // Check if lesson has key concepts
+      if (!lesson.key_concepts || !Array.isArray(lesson.key_concepts) || lesson.key_concepts.length === 0) {
+        console.log(`[CHAT START] Lesson has no key concepts`)
+        return NextResponse.json({ 
+          error: "Chat is not available for this lesson yet. The teacher needs to generate lesson content with key concepts first.",
+          chatNotAvailable: true 
+        }, { status: 400 })
+      }
+    } catch (lessonError: any) {
+      console.error(`[CHAT START] Error in lesson fetching:`, lessonError)
+      throw lessonError
     }
 
     // Parse existing session state or create new one
     let sessionState: any
-    if (existingSession && existingSession.summary) {
+    if (sessionData && sessionData.summary) {
       try {
-        sessionState = JSON.parse(existingSession.summary)
-      } catch {
+        sessionState = JSON.parse(sessionData.summary)
+        console.log(`[CHAT START] Parsed session state:`, {
+          hasQuestions: !!(sessionState?.questions),
+          questionCount: sessionState?.questions?.length || 0,
+          currentIndex: sessionState?.currentQuestionIndex || 0,
+          currentPhase: sessionState?.currentPhase
+        })
+      } catch (e) {
+        console.log(`[CHAT START] Failed to parse session state:`, e)
         sessionState = null
       }
+    } else {
+      console.log(`[CHAT START] No existing session state found`)
     }
 
     // If resuming existing session with valid state
     if (sessionState && sessionState.questions && sessionState.questions.length > 0) {
-      const currentQuestion = sessionState.questions[sessionState.currentQuestionIndex]
+      console.log(`[CHAT START] Resuming session ${sessionData.id} with ${sessionState.questions.length} questions`)
+      
+      const currentQuestion = sessionState.questions[sessionState.currentQuestionIndex || 0]
+      const currentIndex = sessionState.currentQuestionIndex || 0
+      
+      // Calculate progress correctly
+      // For resumed sessions, current should reflect which concept we're on
+      const completedConcepts = sessionState.currentPhase === 'example' ? currentIndex : Math.max(0, currentIndex - 1)
       const progress = {
-        current: sessionState.currentQuestionIndex + 1,
+        current: currentIndex + 1,
         total: sessionState.questions.length,
-        percentage: Math.round((sessionState.currentQuestionIndex / sessionState.questions.length) * 100)
+        percentage: sessionState.questions.length > 0 
+          ? Math.round((completedConcepts / sessionState.questions.length) * 100)
+          : 0
       }
 
       return NextResponse.json({ 
         success: true,
         sessionId: sessionData.id,
         currentQuestion: currentQuestion,
-        currentPhase: sessionState.currentPhase,
+        currentPhase: sessionState.currentPhase || 'multiple_choice',
         progress: progress,
         resumed: true
       })
     }
+
+    // If we have an existing session but no valid session state, we need to regenerate questions
+    // This can happen if the session was created but questions generation failed previously
+    const isExistingSessionWithoutState = sessionData && (!sessionState || !sessionState.questions)
+    
+    console.log(`[CHAT START] Generating questions for session ${sessionData.id}`, {
+      isExisting: !!sessionData,
+      needsRegeneration: isExistingSessionWithoutState
+    })
 
     // Generate new questions for new session
     const { data: materials, error: materialsError } = await supabaseAdmin
@@ -232,8 +399,10 @@ Only return the JSON object, nothing else.`
       console.error("Error updating session with questions:", updateError)
     }
 
-    // Save Chirpy's initial greeting as the first message (only if not resuming)
-    if (!existingSession) {
+    // Save Chirpy's initial greeting as the first message (only if new session)
+    const isNewSession = !sessions || sessions.length === 0 || sessionData.status !== "active"
+    if (isNewSession) {
+      console.log(`[CHAT START] Saving initial message for new session ${sessionData.id}`)
       const firstQuestion = questions[0]
       if (firstQuestion) {
         await supabaseAdmin.from("chat_messages").insert({
@@ -249,7 +418,15 @@ Only return the JSON object, nothing else.`
           timestamp: new Date().toISOString()
         })
       }
+    } else {
+      console.log(`[CHAT START] Skipping initial message save for existing session ${sessionData.id}`)
     }
+
+    console.log(`[CHAT START] Returning new session response for ${sessionData.id}`, {
+      hasQuestions: questions.length > 0,
+      questionCount: questions.length,
+      regenerated: isExistingSessionWithoutState
+    })
 
     return NextResponse.json({ 
       success: true,
@@ -261,10 +438,14 @@ Only return the JSON object, nothing else.`
         total: questions.length,
         percentage: 0
       },
-      resumed: false
+      resumed: false,
+      regenerated: isExistingSessionWithoutState // Indicate if we regenerated questions for existing session
     })
   } catch (error: any) {
-    console.error("Error starting chat session:", error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error("Error in handleChatStartRequest:", error)
+    return NextResponse.json({ 
+      error: error.message || "Failed to start chat session",
+      details: error.stack
+    }, { status: 500 })
   }
 }

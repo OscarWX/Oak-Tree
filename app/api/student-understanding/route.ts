@@ -9,27 +9,47 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "lessonId is required" }, { status: 400 })
     }
 
-    // Get all student understanding data for this lesson
-    const { data: understandingData, error: understandingError } = await supabaseAdmin
-      .from("student_understanding")
+    // Get all multiple choice attempts for this lesson to calculate understanding
+    const { data: attempts, error: attemptsError } = await supabaseAdmin
+      .from("multiple_choice_attempts")
       .select(`
         *,
         students!inner(id, name)
       `)
       .eq("lesson_id", lessonId)
-      .order("noted_at", { ascending: false })
+      .order("created_at", { ascending: false })
 
-    if (understandingError) {
-      console.error("Error fetching understanding data:", understandingError)
-      return NextResponse.json({ error: "Failed to fetch understanding data" }, { status: 500 })
+    if (attemptsError) {
+      console.error("Error fetching attempts data:", attemptsError)
+      return NextResponse.json({ error: "Failed to fetch attempts data" }, { status: 500 })
     }
 
-    // Group by student and calculate overall understanding
+    // Get session data for completion information
+    const { data: sessions, error: sessionsError } = await supabaseAdmin
+      .from("chat_sessions")
+      .select(`
+        id,
+        student_id,
+        lesson_id,
+        status,
+        started_at,
+        ended_at,
+        summary
+      `)
+      .eq("lesson_id", lessonId)
+
+    if (sessionsError) {
+      console.error("Error fetching sessions data:", sessionsError)
+    }
+
+    // Calculate understanding from actual attempt data
     const studentMap = new Map()
+    const conceptWrongCounts = new Map() // Track wrong attempts per student per concept
     
-    understandingData?.forEach((record) => {
-      const studentId = record.student_id
-      const studentName = record.students.name
+    attempts?.forEach((attempt) => {
+      const studentId = attempt.student_id
+      const studentName = attempt.students.name
+      const concept = attempt.concept
       
       if (!studentMap.has(studentId)) {
         studentMap.set(studentId, {
@@ -39,25 +59,84 @@ export async function GET(request: NextRequest) {
           totalLevel: 0,
           conceptCount: 0,
           strengths: [],
-          misunderstandings: []
+          misunderstandings: [],
+          lastActivity: attempt.created_at
         })
       }
       
       const student = studentMap.get(studentId)
-      student.concepts.push({
-        concept: record.concept,
-        level: record.level,
-        noted_at: record.noted_at
-      })
       
-      student.totalLevel += record.level
-      student.conceptCount += 1
+      // Update last activity
+      if (attempt.created_at > student.lastActivity) {
+        student.lastActivity = attempt.created_at
+      }
+
+      // Track wrong attempts per concept
+      const conceptKey = `${studentId}-${concept}`
+      if (!conceptWrongCounts.has(conceptKey)) {
+        conceptWrongCounts.set(conceptKey, { 
+          studentId, 
+          concept, 
+          wrongCount: 0, 
+          totalAttempts: 0 
+        })
+      }
       
-      // Categorize based on level (1-2 = misunderstanding, 3-4 = strength)
-      if (record.level <= 2) {
-        student.misunderstandings.push(record.concept)
+      const conceptData = conceptWrongCounts.get(conceptKey)
+      conceptData.totalAttempts++
+      if (!attempt.is_correct) {
+        conceptData.wrongCount++
+      }
+    })
+
+    // Calculate understanding levels for each concept
+    conceptWrongCounts.forEach((conceptData) => {
+      const student = studentMap.get(conceptData.studentId)
+      if (!student) return
+
+      // Calculate understanding level (1-4 scale) based on wrong attempts
+      let level
+      if (conceptData.wrongCount === 0) {
+        level = 4 // Perfect understanding
+      } else if (conceptData.wrongCount === 1) {
+        level = 3 // Good understanding
+      } else if (conceptData.wrongCount <= 3) {
+        level = 2 // Moderate understanding
       } else {
-        student.strengths.push(record.concept)
+        level = 1 // Poor understanding
+      }
+
+      student.concepts.push({
+        concept: conceptData.concept,
+        level: level,
+        wrongCount: conceptData.wrongCount,
+        totalAttempts: conceptData.totalAttempts,
+        noted_at: new Date().toISOString()
+      })
+
+      student.totalLevel += level
+      student.conceptCount += 1
+
+      // Categorize based on level
+      if (level <= 2) {
+        student.misunderstandings.push(conceptData.concept)
+      } else {
+        student.strengths.push(conceptData.concept)
+      }
+    })
+
+    // Add session completion data
+    sessions?.forEach((session) => {
+      const student = studentMap.get(session.student_id)
+      if (student) {
+        student.sessionStatus = session.status
+        student.sessionCompleted = session.status === 'completed'
+        
+        // Update last activity with session data if more recent
+        const sessionDate = session.ended_at || session.started_at
+        if (sessionDate > student.lastActivity) {
+          student.lastActivity = sessionDate
+        }
       }
     })
 
@@ -71,9 +150,7 @@ export async function GET(request: NextRequest) {
         ...student,
         understanding,
         averageLevel,
-        lastActive: student.concepts.length > 0 ? 
-          new Date(Math.max(...student.concepts.map((c: any) => new Date(c.noted_at).getTime()))).toLocaleDateString() : 
-          "No activity"
+        lastActive: new Date(student.lastActivity).toLocaleDateString()
       }
     })
 
@@ -98,7 +175,8 @@ export async function GET(request: NextRequest) {
       students,
       classAverage,
       commonMisunderstandings,
-      totalStudents: students.length
+      totalStudents: students.length,
+      message: "Understanding calculated from actual student attempts"
     })
 
   } catch (error: any) {

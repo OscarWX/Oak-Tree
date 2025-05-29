@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertCircle, User, RefreshCw, Brain, CheckCircle, XCircle, Target, TrendingUp, Clock, BookOpen } from "lucide-react"
+import { AlertCircle, User, RefreshCw, Brain, CheckCircle, XCircle, Target, TrendingUp, Clock } from "lucide-react"
 
 interface StudentUnderstandingTabProps {
   lessonId: string
@@ -30,6 +30,17 @@ interface ConceptTracking {
   created_at: string
 }
 
+interface SessionData {
+  id: string
+  student_id: string
+  lesson_id: string
+  started_at: string
+  ended_at: string | null
+  status: string
+  summary: string | null
+  students: { id: string; name: string; email: string }
+}
+
 interface StudentProgress {
   student: { id: string; name: string; email: string }
   concepts: ConceptTracking[]
@@ -40,6 +51,8 @@ interface StudentProgress {
   badConcepts: number
   averageWrongCount: number
   lastActivity: string
+  completionPercentage: number
+  sessionCompleted: boolean
 }
 
 export default function StudentUnderstandingTab({
@@ -47,52 +60,98 @@ export default function StudentUnderstandingTab({
   lessonTitle,
 }: StudentUnderstandingTabProps) {
   const [conceptData, setConceptData] = useState<ConceptTracking[]>([])
-  const [studentsData, setStudentsData] = useState<any[]>([])
+  const [sessionsData, setSessionsData] = useState<SessionData[]>([])
   const [allConcepts, setAllConcepts] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [selectedView, setSelectedView] = useState<'overview' | 'by-student' | 'by-concept'>('overview')
+  const [selectedView, setSelectedView] = useState<'overview' | 'by-student'>('overview')
 
   useEffect(() => {
     fetchAllData()
+    
+    // Set up periodic refresh every 30 seconds to catch student resets
+    const interval = setInterval(() => {
+      fetchAllData()
+    }, 30000)
+    
+    return () => clearInterval(interval)
   }, [lessonId])
 
   const fetchAllData = async () => {
     setIsLoading(true)
     try {
-      // Fetch concept tracking data
-      const conceptResponse = await fetch(`/api/concept-understanding?lessonId=${lessonId}`)
-      if (!conceptResponse.ok) throw new Error('Failed to fetch concept data')
-      const conceptResult = await conceptResponse.json()
+      // Use the working teacher progress API instead of separate endpoints
+      const teacherId = '00000000-0000-0000-0000-000000000001' // Default teacher ID
+      const progressResponse = await fetch(`/api/teacher/progress?teacherId=${teacherId}&lessonId=${lessonId}`)
       
-      // Fetch students who have interacted with this lesson
-      const studentsResponse = await fetch(`/api/students?lessonId=${lessonId}`)
-      let students = []
-      if (studentsResponse.ok) {
-        const studentsResult = await studentsResponse.json()
-        students = studentsResult.students || []
-      }
+      if (progressResponse.ok) {
+        const progressData = await progressResponse.json()
+        
+        // Transform the data to match our interfaces
+        const conceptTrackingData: ConceptTracking[] = []
+        const sessionData: SessionData[] = []
+        
+        // Process the conceptProgress data from the working API
+        progressData.conceptProgress.forEach((item: any) => {
+          // Create session data
+          const sessionExists = sessionData.find(s => s.student_id === item.student_id)
+          if (!sessionExists) {
+            sessionData.push({
+              id: item.student_id, // Using student_id as session id for uniqueness
+              student_id: item.student_id,
+              lesson_id: item.lesson_id,
+              started_at: new Date().toISOString(),
+              ended_at: item.phase === 'completed' ? new Date().toISOString() : null,
+              status: item.phase === 'completed' ? 'completed' : 'active',
+              summary: JSON.stringify({
+                questions: Array(item.totalConcepts || 1).fill({}),
+                currentQuestionIndex: item.conceptsCompleted || 0,
+                currentPhase: item.phase === 'completed' ? 'completed' : 'example'
+              }),
+              students: {
+                id: item.student_id,
+                name: item.students.name,
+                email: item.students.email
+              }
+            })
+          }
+          
+          // Create concept tracking data for each concept (not just when there are wrong answers)
+          const conceptName = item.concept && item.concept !== 'Overall Progress' ? item.concept : `Concept ${conceptTrackingData.length + 1}`
+          
+          conceptTrackingData.push({
+            id: `${item.student_id}-${conceptName}`,
+            student_id: item.student_id,
+            lesson_id: item.lesson_id,
+            concept: conceptName,
+            wrong_multiple_choice_count: item.wrongAnswersCount || 0,
+            wrong_example_count: 0,
+            total_wrong_count: item.wrongAnswersCount || 0,
+            understanding_level: item.wrongAnswersCount === 0 ? 'good' : 
+                               item.wrongAnswersCount <= 2 ? 'moderate' : 'bad',
+            last_updated: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          })
+        })
 
-      // Get lesson data to extract concepts
-      const lessonResponse = await fetch(`/api/lessons/${lessonId}`)
-      let lessonConcepts = []
-      if (lessonResponse.ok) {
-        const lessonResult = await lessonResponse.json()
-        lessonConcepts = lessonResult.lesson?.key_concepts || []
+        setConceptData(conceptTrackingData)
+        setSessionsData(sessionData)
+        
+        // Set all concepts based on what we found
+        const allUniqueConcepts = [...new Set(conceptTrackingData.map(item => item.concept))]
+        setAllConcepts(allUniqueConcepts.length > 0 ? allUniqueConcepts : ['Overall Progress'])
+        
+      } else {
+        console.error('Failed to fetch progress data')
+        setConceptData([])
+        setSessionsData([])
+        setAllConcepts([])
       }
-
-      setConceptData(conceptResult.data || [])
-      setStudentsData(students)
-      
-      // Get all unique concepts from both tracking data and lesson
-      const trackingConcepts = [...new Set(conceptResult.data?.map((item: ConceptTracking) => item.concept) || [])]
-      const allUniqueConcepts = [...new Set([...trackingConcepts, ...lessonConcepts])]
-      setAllConcepts(allUniqueConcepts)
       
     } catch (error) {
       console.error("Error fetching data:", error)
       setConceptData([])
-      setStudentsData([])
+      setSessionsData([])
       setAllConcepts([])
     } finally {
       setIsLoading(false)
@@ -109,44 +168,133 @@ export default function StudentUnderstandingTab({
   const processStudentProgress = (): StudentProgress[] => {
     const studentMap = new Map<string, StudentProgress>()
 
-    // Initialize all students who have interacted
-    studentsData.forEach(student => {
-      studentMap.set(student.id, {
-        student: student,
-        concepts: [],
-        totalConcepts: allConcepts.length,
-        completedConcepts: 0,
-        goodConcepts: 0,
-        moderateConcepts: 0,
-        badConcepts: 0,
-        averageWrongCount: 0,
-        lastActivity: 'No activity'
-      })
+    // Initialize from sessions data (students who have actually started)
+    sessionsData.forEach(session => {
+      if (!studentMap.has(session.student_id)) {
+        // Handle different possible data structures for student info
+        let studentInfo
+        if (session.students) {
+          // If students is an object with name/email directly
+          if (typeof session.students === 'object' && 'name' in session.students) {
+            studentInfo = {
+              id: session.student_id,
+              name: (session.students as any).name || 'Unknown Student',
+              email: (session.students as any).email || 'No email'
+            }
+          } 
+          // If students is an array, take the first one
+          else if (Array.isArray(session.students) && (session.students as any).length > 0) {
+            studentInfo = {
+              id: session.student_id,
+              name: (session.students as any)[0]?.name || 'Unknown Student',
+              email: (session.students as any)[0]?.email || 'No email'
+            }
+          }
+          else {
+            studentInfo = {
+              id: session.student_id,
+              name: 'Unknown Student',
+              email: 'No email'
+            }
+          }
+        } else {
+          studentInfo = {
+            id: session.student_id,
+            name: 'Unknown Student',
+            email: 'No email'
+          }
+        }
+
+        // Get actual total concepts from session questions, not lesson key_concepts
+        let totalConcepts = allConcepts.length
+        if (session.summary) {
+          try {
+            const sessionState = JSON.parse(session.summary)
+            if (sessionState.questions && sessionState.questions.length > 0) {
+              totalConcepts = sessionState.questions.length
+            }
+          } catch (e) {
+            console.error("Error parsing session state for concept count:", e)
+          }
+        }
+
+        studentMap.set(session.student_id, {
+          student: studentInfo,
+          concepts: [],
+          totalConcepts: totalConcepts,
+          completedConcepts: 0,
+          goodConcepts: 0,
+          moderateConcepts: 0,
+          badConcepts: 0,
+          averageWrongCount: 0,
+          lastActivity: 'No activity',
+          completionPercentage: 0,
+          sessionCompleted: false
+        })
+      }
+      
+      const studentProgress = studentMap.get(session.student_id)!
+      
+      // Calculate completion based on session status and summary
+      if (session.status === 'completed' && session.ended_at) {
+        studentProgress.sessionCompleted = true
+        studentProgress.completionPercentage = 100
+        studentProgress.completedConcepts = studentProgress.totalConcepts
+      } else if (session.summary) {
+        try {
+          const sessionState = JSON.parse(session.summary)
+          if (sessionState.questions && sessionState.currentQuestionIndex !== undefined) {
+            const total = sessionState.questions.length
+            const current = sessionState.currentQuestionIndex
+            const completed = sessionState.currentPhase === 'example' ? current : Math.max(0, current)
+            studentProgress.completionPercentage = total > 0 ? Math.round((completed / total) * 100) : 0
+            studentProgress.completedConcepts = completed
+          }
+        } catch (e) {
+          console.error("Error parsing session state:", e)
+        }
+      }
+      
+      // Set last activity
+      const activityDate = new Date(session.ended_at || session.started_at)
+      studentProgress.lastActivity = activityDate.toLocaleDateString()
     })
 
-    // Add concept tracking data
+    // Add concept tracking data and calculate wrong answers from multiple choice attempts
     conceptData.forEach(tracking => {
       if (studentMap.has(tracking.student_id)) {
         const studentProgress = studentMap.get(tracking.student_id)!
         studentProgress.concepts.push(tracking)
         
+        // Count by understanding level based on wrong answers
+        const wrongCount = tracking.total_wrong_count
+        let understandingLevel: 'good' | 'moderate' | 'bad'
+        
+        if (wrongCount === 0) {
+          understandingLevel = 'good'
+        } else if (wrongCount <= 2) {
+          understandingLevel = 'moderate'  
+        } else {
+          understandingLevel = 'bad'
+        }
+        
+        // Update the tracking object with calculated understanding
+        tracking.understanding_level = understandingLevel
+        
         // Count by understanding level
-        if (tracking.understanding_level === 'good') studentProgress.goodConcepts++
-        else if (tracking.understanding_level === 'moderate') studentProgress.moderateConcepts++
-        else if (tracking.understanding_level === 'bad') studentProgress.badConcepts++
+        if (understandingLevel === 'good') studentProgress.goodConcepts++
+        else if (understandingLevel === 'moderate') studentProgress.moderateConcepts++
+        else if (understandingLevel === 'bad') studentProgress.badConcepts++
         
-        studentProgress.completedConcepts = studentProgress.concepts.length
-        
-        // Calculate average wrong count
+        // Calculate average wrong count - this is the total wrong answers for this student
         const totalWrong = studentProgress.concepts.reduce((sum, c) => sum + c.total_wrong_count, 0)
-        studentProgress.averageWrongCount = studentProgress.concepts.length > 0 
-          ? Math.round((totalWrong / studentProgress.concepts.length) * 10) / 10 
-          : 0
+        studentProgress.averageWrongCount = totalWrong // Change this to total instead of average
         
-        // Update last activity
-        const lastUpdate = new Date(tracking.last_updated)
-        if (studentProgress.lastActivity === 'No activity' || new Date(studentProgress.lastActivity) < lastUpdate) {
-          studentProgress.lastActivity = lastUpdate.toLocaleDateString()
+        // Update last activity if tracking is more recent
+        const trackingDate = new Date(tracking.last_updated)
+        const currentDate = studentProgress.lastActivity === 'No activity' ? new Date(0) : new Date(studentProgress.lastActivity)
+        if (trackingDate > currentDate) {
+          studentProgress.lastActivity = trackingDate.toLocaleDateString()
         }
       }
     })
@@ -172,63 +320,36 @@ export default function StudentUnderstandingTab({
     )
   }
 
-  const getProgressPercentage = (completed: number, total: number) => {
-    return total > 0 ? Math.round((completed / total) * 100) : 0
-  }
-
-  const processConceptAnalytics = () => {
-    const conceptMap = new Map<string, {
-      concept: string
-      totalStudents: number
-      studentsAttempted: number
-      avgWrongCount: number
-      levelDistribution: { good: number; moderate: number; bad: number }
-    }>()
-
-    allConcepts.forEach(concept => {
-      conceptMap.set(concept, {
-        concept,
-        totalStudents: studentsData.length,
-        studentsAttempted: 0,
-        avgWrongCount: 0,
-        levelDistribution: { good: 0, moderate: 0, bad: 0 }
-      })
-    })
-
-    conceptData.forEach(tracking => {
-      const analytics = conceptMap.get(tracking.concept)
-      if (analytics) {
-        analytics.studentsAttempted++
-        analytics.avgWrongCount += tracking.total_wrong_count
-        analytics.levelDistribution[tracking.understanding_level]++
-      }
-    })
-
-    // Calculate averages
-    conceptMap.forEach(analytics => {
-      if (analytics.studentsAttempted > 0) {
-        analytics.avgWrongCount = Math.round((analytics.avgWrongCount / analytics.studentsAttempted) * 10) / 10
-      }
-    })
-
-    return Array.from(conceptMap.values())
-  }
-
   const studentProgress = processStudentProgress()
-  const conceptAnalytics = processConceptAnalytics()
   
+  // Debug logging to see the actual data structure
+  useEffect(() => {
+    if (studentProgress.length > 0) {
+      console.log("Student progress data structure:", studentProgress[0])
+    }
+  }, [studentProgress])
+
   // Calculate class-level statistics
   const classStats = {
-    totalStudents: studentsData.length,
-    studentsWithData: studentProgress.filter(s => s.concepts.length > 0).length,
+    totalStudents: studentProgress.length,
+    activeStudents: studentProgress.filter(s => s.completionPercentage > 0).length,
     averageCompletionRate: studentProgress.length > 0 
-      ? Math.round(studentProgress.reduce((sum, s) => sum + getProgressPercentage(s.completedConcepts, s.totalConcepts), 0) / studentProgress.length)
+      ? Math.round(studentProgress.reduce((sum, s) => sum + s.completionPercentage, 0) / studentProgress.length)
       : 0,
-    totalConceptsTracked: conceptData.length,
+    totalWrongAnswers: studentProgress.reduce((sum, s) => sum + s.averageWrongCount, 0),
     averageUnderstandingDistribution: {
-      good: conceptData.filter(c => c.understanding_level === 'good').length,
-      moderate: conceptData.filter(c => c.understanding_level === 'moderate').length,
-      bad: conceptData.filter(c => c.understanding_level === 'bad').length
+      good: conceptData.filter(c => {
+        const wrongCount = c.total_wrong_count
+        return wrongCount === 0
+      }).length,
+      moderate: conceptData.filter(c => {
+        const wrongCount = c.total_wrong_count
+        return wrongCount > 0 && wrongCount <= 2
+      }).length,
+      bad: conceptData.filter(c => {
+        const wrongCount = c.total_wrong_count
+        return wrongCount > 2
+      }).length
     }
   }
 
@@ -242,23 +363,22 @@ export default function StudentUnderstandingTab({
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold">{lessonTitle} - Concept Understanding</h2>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-        >
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight">{lessonTitle || 'Student Understanding'}</h2>
+          <p className="text-muted-foreground">Track student progress and understanding levels</p>
+        </div>
+        <Button onClick={handleRefresh} disabled={isRefreshing} variant="outline" size="sm">
           <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
 
-      {/* Class Overview Stats */}
+      {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Total Students</p>
@@ -268,9 +388,9 @@ export default function StudentUnderstandingTab({
             </div>
           </CardContent>
         </Card>
-        
+
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Avg Completion</p>
@@ -280,25 +400,25 @@ export default function StudentUnderstandingTab({
             </div>
           </CardContent>
         </Card>
-        
+
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-muted-foreground">Concepts Tracked</p>
-                <p className="text-2xl font-bold">{classStats.totalConceptsTracked}</p>
+                <p className="text-sm font-medium text-muted-foreground">Total Wrong Answers</p>
+                <p className="text-2xl font-bold">{classStats.totalWrongAnswers}</p>
               </div>
-              <Brain className="h-8 w-8 text-purple-600" />
+              <XCircle className="h-8 w-8 text-red-600" />
             </div>
           </CardContent>
         </Card>
-        
+
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Active Students</p>
-                <p className="text-2xl font-bold">{classStats.studentsWithData}</p>
+                <p className="text-2xl font-bold">{classStats.activeStudents}</p>
               </div>
               <TrendingUp className="h-8 w-8 text-orange-600" />
             </div>
@@ -306,37 +426,43 @@ export default function StudentUnderstandingTab({
         </Card>
       </div>
 
+      {/* Understanding Distribution */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Understanding Distribution</CardTitle>
+          <CardDescription>How students are performing across all concepts</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-6 text-center">
+            <div>
+              <div className="text-4xl font-bold text-green-600 mb-2">
+                {classStats.averageUnderstandingDistribution.good}
+              </div>
+              <div className="text-sm text-muted-foreground">Good Understanding</div>
+            </div>
+            <div>
+              <div className="text-4xl font-bold text-yellow-600 mb-2">
+                {classStats.averageUnderstandingDistribution.moderate}
+              </div>
+              <div className="text-sm text-muted-foreground">Moderate Understanding</div>
+            </div>
+            <div>
+              <div className="text-4xl font-bold text-red-600 mb-2">
+                {classStats.averageUnderstandingDistribution.bad}
+              </div>
+              <div className="text-sm text-muted-foreground">Need Help</div>
+            </div>
+        </div>
+        </CardContent>
+      </Card>
+
       <Tabs value={selectedView} onValueChange={(value) => setSelectedView(value as any)} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="by-student">By Student</TabsTrigger>
-          <TabsTrigger value="by-concept">By Concept</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Understanding Distribution</CardTitle>
-              <CardDescription>How students are performing across all concepts</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-600">{classStats.averageUnderstandingDistribution.good}</div>
-                  <div className="text-sm text-muted-foreground">Good Understanding</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-yellow-600">{classStats.averageUnderstandingDistribution.moderate}</div>
-                  <div className="text-sm text-muted-foreground">Moderate Understanding</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-red-600">{classStats.averageUnderstandingDistribution.bad}</div>
-                  <div className="text-sm text-muted-foreground">Need Help</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           <Card>
             <CardHeader>
               <CardTitle>Quick Student Overview</CardTitle>
@@ -350,22 +476,29 @@ export default function StudentUnderstandingTab({
                       <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
                         <User className="h-5 w-5" />
                       </div>
-                      <div>
+              <div>
                         <div className="font-medium">{student.student.name}</div>
                         <div className="text-sm text-muted-foreground">
-                          {student.completedConcepts}/{student.totalConcepts} concepts • Last active: {student.lastActivity}
+                          {student.completedConcepts}/{student.totalConcepts} concepts • {student.averageWrongCount} wrong answers
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
                       <div className="text-right">
-                        <div className="text-sm font-medium">{getProgressPercentage(student.completedConcepts, student.totalConcepts)}% Complete</div>
-                        <div className="text-xs text-muted-foreground">Avg: {student.averageWrongCount} wrong answers</div>
-                      </div>
-                      <Progress value={getProgressPercentage(student.completedConcepts, student.totalConcepts)} className="w-20" />
-                    </div>
+                        <div className="text-sm font-medium">{student.completionPercentage}% Complete</div>
+                        <div className="text-xs text-muted-foreground">
+                          {student.sessionCompleted ? 'Session completed' : `${student.averageWrongCount} wrong answers total`}
+                        </div>
+                </div>
+                      <Progress value={student.completionPercentage} className="w-20" />
+              </div>
                   </div>
                 ))}
+                {studentProgress.length === 0 && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No student activity yet for this lesson.
+                </div>
+              )}
               </div>
             </CardContent>
           </Card>
@@ -377,51 +510,55 @@ export default function StudentUnderstandingTab({
               <Card key={student.student.id}>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
-                        <User className="h-4 w-4" />
-                      </div>
-                      <div>
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                        <User className="h-5 w-5" />
+                        </div>
+                        <div>
                         <CardTitle className="text-lg">{student.student.name}</CardTitle>
-                        <CardDescription>{student.student.email}</CardDescription>
+                        <p className="text-sm text-muted-foreground">Last active: {student.lastActivity}</p>
                       </div>
                     </div>
-                    <Badge variant="outline">
-                      {student.completedConcepts}/{student.totalConcepts} concepts
-                    </Badge>
-                  </div>
-                </CardHeader>
+                    {student.sessionCompleted && (
+                      <Badge className="bg-green-100 text-green-800 border-green-200">
+                        <CheckCircle className="h-3 w-3 mr-1" />
+                        Completed
+                      </Badge>
+                    )}
+                    </div>
+                  </CardHeader>
+
                 <CardContent className="space-y-4">
                   <div>
                     <div className="flex justify-between text-sm mb-1">
                       <span>Progress</span>
-                      <span>{getProgressPercentage(student.completedConcepts, student.totalConcepts)}%</span>
+                      <span>{student.completionPercentage}%</span>
                     </div>
-                    <Progress value={getProgressPercentage(student.completedConcepts, student.totalConcepts)} className="h-2" />
-                  </div>
+                    <Progress value={student.completionPercentage} className="h-2" />
+                    </div>
 
                   <div className="grid grid-cols-3 gap-2 text-center">
-                    <div>
+                        <div>
                       <div className="text-sm font-medium text-green-600">{student.goodConcepts}</div>
                       <div className="text-xs text-muted-foreground">Good</div>
-                    </div>
-                    <div>
+                        </div>
+                        <div>
                       <div className="text-sm font-medium text-yellow-600">{student.moderateConcepts}</div>
                       <div className="text-xs text-muted-foreground">Moderate</div>
-                    </div>
+                        </div>
                     <div>
                       <div className="text-sm font-medium text-red-600">{student.badConcepts}</div>
                       <div className="text-xs text-muted-foreground">Need Help</div>
                     </div>
-                  </div>
+                    </div>
 
                   {student.concepts.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-medium mb-2">Concept Details</h4>
-                      <div className="space-y-2">
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium">Concepts</h4>
+                      <div className="space-y-1">
                         {student.concepts.map((concept) => (
                           <div key={concept.id} className="flex items-center justify-between text-sm">
-                            <span className="font-medium">{concept.concept}</span>
+                            <span className="truncate flex-1">{concept.concept}</span>
                             <div className="flex items-center gap-2">
                               <span className="text-xs text-muted-foreground">
                                 {concept.total_wrong_count} wrong
@@ -431,73 +568,10 @@ export default function StudentUnderstandingTab({
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
-
-                  {student.concepts.length === 0 && (
-                    <div className="text-center py-4">
-                      <AlertCircle className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                      <p className="text-sm text-muted-foreground">No concept data yet</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="by-concept" className="space-y-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {conceptAnalytics.map((concept) => (
-              <Card key={concept.concept}>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <BookOpen className="h-5 w-5 text-purple-600" />
-                      <CardTitle className="text-lg">{concept.concept}</CardTitle>
-                    </div>
-                    <Badge variant="outline">
-                      {concept.studentsAttempted}/{concept.totalStudents} students
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>Participation Rate</span>
-                      <span>{getProgressPercentage(concept.studentsAttempted, concept.totalStudents)}%</span>
-                    </div>
-                    <Progress value={getProgressPercentage(concept.studentsAttempted, concept.totalStudents)} className="h-2" />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div>
-                      <div className="text-sm font-medium text-green-600">{concept.levelDistribution.good}</div>
-                      <div className="text-xs text-muted-foreground">Good</div>
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-yellow-600">{concept.levelDistribution.moderate}</div>
-                      <div className="text-xs text-muted-foreground">Moderate</div>
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-red-600">{concept.levelDistribution.bad}</div>
-                      <div className="text-xs text-muted-foreground">Need Help</div>
-                    </div>
-                  </div>
-
-                  <div className="text-center p-3 bg-muted rounded-lg">
-                    <div className="text-lg font-medium">{concept.avgWrongCount}</div>
-                    <div className="text-xs text-muted-foreground">Average wrong answers</div>
-                  </div>
-
-                  {concept.studentsAttempted === 0 && (
-                    <div className="text-center py-4">
-                      <Clock className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                      <p className="text-sm text-muted-foreground">No students have attempted this concept yet</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
             ))}
           </div>
         </TabsContent>

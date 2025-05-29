@@ -108,6 +108,17 @@ export async function POST(request: NextRequest) {
         // Record good understanding
         await recordUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 4)
         
+        // Track the multiple choice attempt (CORRECT)
+        await trackMultipleChoiceAttempt(
+          sessionId,
+          session.student_id,
+          session.lesson_id,
+          currentQuestion.concept,
+          selectedOption,
+          currentQuestion.correctOption,
+          true  // This is a CORRECT answer
+        )
+        
         // Track concept understanding (correct multiple choice)
         await trackConceptUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 'multiple_choice', true)
         
@@ -211,6 +222,16 @@ export async function POST(request: NextRequest) {
         // Positive feedback for good example
         const feedback = generateExampleFeedback(true, answer, currentQuestion.concept, session.lessons?.topic)
         
+        // Track the example attempt (CORRECT)
+        await trackExampleAttempt(
+          sessionId,
+          session.student_id,
+          session.lesson_id,
+          currentQuestion.concept,
+          answer,
+          true  // This is a CORRECT example
+        )
+        
         await supabaseAdmin.from("chat_messages").insert({
           session_id: sessionId,
           sender_type: "ai",
@@ -255,7 +276,7 @@ export async function POST(request: NextRequest) {
             progress: {
               current: nextIndex + 1,
               total: questions.length,
-              percentage: Math.round(((nextIndex + 1) / questions.length) * 100)
+              percentage: Math.round((nextIndex / questions.length) * 100)
             }
           }
         } else {
@@ -264,7 +285,8 @@ export async function POST(request: NextRequest) {
             .from("chat_sessions")
             .update({ 
               ended_at: timestamp,
-              understanding_level: 4
+              understanding_level: 4,
+              status: "completed"
             })
             .eq("id", sessionId)
 
@@ -293,6 +315,16 @@ export async function POST(request: NextRequest) {
       } else {
         // Invalid example - provide helpful feedback
         const feedback = generateExampleFeedback(false, answer, currentQuestion.concept, session.lessons?.topic)
+        
+        // Track the example attempt (INCORRECT)
+        await trackExampleAttempt(
+          sessionId,
+          session.student_id,
+          session.lesson_id,
+          currentQuestion.concept,
+          answer,
+          false  // This is an INCORRECT example
+        )
         
         // Generate dynamic hint based on student's specific answer
         const dynamicHint = await generateDynamicHint(
@@ -659,33 +691,39 @@ async function trackMultipleChoiceAttempt(
   isCorrect: boolean
 ): Promise<number> {
   try {
-    const { data: attempts, error: attemptError } = await supabaseAdmin
+    // Count existing attempts for this concept in this session
+    const { data: existingAttempts, error: countError } = await supabaseAdmin
       .from("multiple_choice_attempts")
       .select("*")
       .eq("session_id", sessionId)
-      .eq("student_id", studentId)
-      .eq("lesson_id", lessonId)
       .eq("concept", concept)
-      .eq("selected_option", selectedOption)
-      .eq("correct_option", correctOption)
-      .eq("is_correct", isCorrect)
 
-    if (attemptError || !attempts || attempts.length === 0) {
-      // If no record exists for this attempt, create a new one
-      await supabaseAdmin.from("multiple_choice_attempts").insert({
+    if (countError) {
+      console.error("Error counting existing attempts:", countError)
+    }
+
+    const attemptNumber = (existingAttempts?.length || 0) + 1
+
+    // Insert new attempt record
+    const { error: insertError } = await supabaseAdmin
+      .from("multiple_choice_attempts")
+      .insert({
         session_id: sessionId,
         student_id: studentId,
         lesson_id: lessonId,
         concept,
         selected_option: selectedOption,
         correct_option: correctOption,
-        is_correct: isCorrect
+        is_correct: isCorrect,
+        attempt_number: attemptNumber
       })
+
+    if (insertError) {
+      console.error("Error inserting attempt:", insertError)
       return 1
-    } else {
-      // If record exists, return the attempt number
-      return attempts.length
     }
+
+    return attemptNumber
   } catch (error) {
     console.error("Failed to track multiple choice attempt:", error)
     return 1 // Default to first attempt
@@ -820,5 +858,53 @@ async function trackConceptUnderstanding(
     }
   } catch (error) {
     console.error('Error tracking concept understanding:', error)
+  }
+}
+
+// Track example attempt
+async function trackExampleAttempt(
+  sessionId: string,
+  studentId: string,
+  lessonId: string,
+  concept: string,
+  studentExample: string,
+  isCorrect: boolean
+): Promise<number> {
+  try {
+    // Count existing attempts for this concept in this session
+    const { data: existingAttempts, error: countError } = await supabaseAdmin
+      .from("example_attempts")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("concept", concept)
+
+    if (countError) {
+      console.error("Error counting existing example attempts:", countError)
+    }
+
+    const attemptNumber = (existingAttempts?.length || 0) + 1
+
+    // Insert new attempt record
+    const { error: insertError } = await supabaseAdmin
+      .from("example_attempts")
+      .insert({
+        session_id: sessionId,
+        student_id: studentId,
+        lesson_id: lessonId,
+        concept,
+        student_example: studentExample,
+        is_correct: isCorrect,
+        attempt_number: attemptNumber
+      })
+
+    if (insertError) {
+      console.error("Error inserting example attempt:", insertError)
+      return 1
+    }
+
+    return attemptNumber
+  } catch (error) {
+    console.error("Failed to track example attempt:", error)
+    return 1 // Default to first attempt
   }
 }

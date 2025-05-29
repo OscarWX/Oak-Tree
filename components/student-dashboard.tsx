@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { BookOpen, ChevronLeft, Menu, ChevronDown, ChevronRight } from "lucide-react"
 import { useRouter } from "next/navigation"
-import ChatInterface from "../chat-interface"
 import { useLessons } from "@/hooks/use-lessons"
 import { useCourses } from "@/hooks/use-courses"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -18,13 +17,12 @@ interface StudentDashboardProps {
 }
 
 export default function StudentDashboard({ studentId, studentName, onBack }: StudentDashboardProps) {
-  // State for selected course and lesson
-  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null)
-  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null)
-  
   // Sidebar state
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [expandedCourses, setExpandedCourses] = useState<Record<string, boolean>>({})
+
+  // Router for navigation
+  const router = useRouter()
 
   // Fetch courses and lessons data with refetch capability
   const { courses, isLoading: coursesLoading } = useCourses()
@@ -49,18 +47,9 @@ export default function StudentDashboard({ studentId, studentName, onBack }: Stu
 
   // Handle lesson selection
   const handleLessonSelect = (courseId: string, lessonId: string) => {
-    setSelectedCourseId(courseId)
-    setSelectedLessonId(lessonId)
-    
-    // Auto-expand the selected course
-    setExpandedCourses(prev => ({
-      ...prev,
-      [courseId]: true
-    }))
+    // Navigate to the specific chat route
+    router.push(`/student/${studentId}/chat/${lessonId}`)
   }
-
-  // Get the active lesson details
-  const activeLesson = lessons.find(lesson => lesson.id === selectedLessonId)
 
   return (
     <div className="flex h-screen bg-background">
@@ -138,7 +127,7 @@ export default function StudentDashboard({ studentId, studentName, onBack }: Stu
                           courseLessons.map((lesson) => (
                             <Button
                               key={lesson.id}
-                              variant={selectedLessonId === lesson.id ? "secondary" : "ghost"}
+                              variant="ghost"
                               className="w-full justify-start h-auto p-2"
                               onClick={() => handleLessonSelect(course.id, lesson.id)}
                             >
@@ -189,11 +178,7 @@ export default function StudentDashboard({ studentId, studentName, onBack }: Stu
                 </Button>
               )}
               <h2 className="text-sm font-medium text-muted-foreground">
-                {activeLesson ? (
-                  `${activeLesson.topic} - Week ${activeLesson.week_number}, Lesson ${activeLesson.lesson_number}`
-                ) : (
-                  "Select a lesson to start learning"
-                )}
+                Select a lesson to start learning
               </h2>
             </div>
 
@@ -207,19 +192,18 @@ export default function StudentDashboard({ studentId, studentName, onBack }: Stu
 
         {/* Main Content Area */}
         <div className="flex-1 flex overflow-hidden">
-          {/* Chat Interface */}
-          {selectedLessonId ? (
-            <ChatInterface studentId={studentId} studentName={studentName} lessonId={selectedLessonId} />
-          ) : (
-            <div className="flex-1 flex items-center justify-center p-4">
-              <div className="text-center max-w-md">
-                <h2 className="text-xl font-semibold mb-2">No Lesson Selected</h2>
-                <p className="text-muted-foreground mb-4">
-                  Please select a lesson from the sidebar to start your learning session
-                </p>
-              </div>
+          <div className="flex-1 flex items-center justify-center p-4">
+            <div className="text-center max-w-md">
+              <BookOpen className="h-16 w-16 mx-auto mb-4 text-blue-600" />
+              <h2 className="text-xl font-semibold mb-2">Welcome, {studentName}!</h2>
+              <p className="text-muted-foreground mb-4">
+                Select a lesson from the sidebar to start your learning session with Chirpy
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Click on any lesson to begin an interactive chat session
+              </p>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

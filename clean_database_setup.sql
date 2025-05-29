@@ -43,7 +43,7 @@ FOR DELETE USING (
 );
 
 -- ========================================
--- ACCOUNT TABLES
+-- USER ACCOUNTS SETUP
 -- ========================================
 
 -- Teachers table
@@ -54,16 +54,18 @@ CREATE TABLE IF NOT EXISTS teachers (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Students table  
+-- Students table
 CREATE TABLE IF NOT EXISTS students (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   email TEXT UNIQUE NOT NULL,
+  phone TEXT,
+  grade_level TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- ========================================
--- COURSE STRUCTURE TABLES
+-- COURSE AND LESSON STRUCTURE
 -- ========================================
 
 -- Courses table
@@ -78,83 +80,65 @@ CREATE TABLE IF NOT EXISTS courses (
 -- Lessons table
 CREATE TABLE IF NOT EXISTS lessons (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
-  week_number INTEGER NOT NULL,
-  lesson_number INTEGER NOT NULL,
   topic TEXT NOT NULL,
-  ai_summary TEXT,
-  key_concepts JSONB,
-  preclass_reading TEXT,
-  teacher_need TEXT,
-  raw TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  description TEXT,
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  summary TEXT,
+  key_concepts TEXT[] DEFAULT '{}',
+  difficulty_level TEXT DEFAULT 'intermediate',
+  estimated_duration INTEGER DEFAULT 60, -- in minutes
+  prerequisite_concepts TEXT[] DEFAULT '{}',
+  learning_objectives TEXT[] DEFAULT '{}',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Materials table
+-- Materials table for lesson content
 CREATE TABLE IF NOT EXISTS materials (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
-  content_type TEXT NOT NULL,
-  content TEXT,
-  file_url TEXT,
-  file_name TEXT,
-  ai_summary TEXT,
-  key_concepts JSONB,
-  processing_status TEXT DEFAULT 'pending',
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE
+  content TEXT NOT NULL,
+  file_path TEXT,
+  file_type TEXT CHECK (file_type IN ('pdf', 'docx', 'txt', 'md')),
+  processing_status TEXT DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+  processed_content TEXT,
+  upload_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  processed_date TIMESTAMP WITH TIME ZONE
 );
 
 -- ========================================
--- CHAT SYSTEM TABLES
+-- STUDENT SESSION AND CONVERSATION DATA
 -- ========================================
 
--- Chat sessions table
+-- Chat sessions table - PRIMARY SOURCE FOR STUDENT PROGRESS
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   student_id UUID REFERENCES students(id) ON DELETE CASCADE,
   lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
   started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   ended_at TIMESTAMP WITH TIME ZONE,
-  understanding_level INTEGER,
-  strengths JSONB,
-  misunderstandings JSONB,
-  summary TEXT,
-  session_state JSONB,
-  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'paused'))
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'abandoned')),
+  summary TEXT, -- JSON containing session state, questions, and progress
+  understanding_level INTEGER
 );
 
--- Chat messages table
+-- Chat messages table - PRIMARY SOURCE FOR CONVERSATION HISTORY
 CREATE TABLE IF NOT EXISTS chat_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  sender_type TEXT NOT NULL CHECK (sender_type IN ('ai', 'student')),
+  sender_type TEXT NOT NULL CHECK (sender_type IN ('student', 'ai')),
   content TEXT NOT NULL,
   content_json JSONB,
-  phase TEXT CHECK (phase IN ('multiple_choice', 'example', 'feedback', 'completion')),
-  dynamic_hint_id UUID,
-  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  dynamic_hint_id UUID
 );
 
 -- ========================================
--- STUDENT PROGRESS TRACKING
+-- STUDENT PERFORMANCE DATA
 -- ========================================
 
--- Student understanding table
-CREATE TABLE IF NOT EXISTS student_understanding (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  student_id UUID REFERENCES students(id) ON DELETE CASCADE,
-  lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
-  concept TEXT NOT NULL,
-  level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 5),
-  noted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE (student_id, lesson_id, concept)
-);
-
--- Concept progress table
+-- Concept progress within sessions
 CREATE TABLE IF NOT EXISTS concept_progress (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -166,7 +150,7 @@ CREATE TABLE IF NOT EXISTS concept_progress (
   UNIQUE(session_id, concept)
 );
 
--- Multiple choice attempts table
+-- Multiple choice attempts table - PRIMARY SOURCE FOR WRONG ANSWER TRACKING
 CREATE TABLE IF NOT EXISTS multiple_choice_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -180,55 +164,6 @@ CREATE TABLE IF NOT EXISTS multiple_choice_attempts (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(session_id, concept, attempt_number)
 );
-
--- ========================================
--- CONCEPT UNDERSTANDING TRACKING
--- ========================================
-
--- Track wrong answers per concept per student for understanding calculation
-CREATE TABLE IF NOT EXISTS concept_understanding_tracking (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  student_id UUID REFERENCES students(id) ON DELETE CASCADE,
-  lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
-  concept TEXT NOT NULL,
-  wrong_multiple_choice_count INTEGER DEFAULT 0,
-  wrong_example_count INTEGER DEFAULT 0,
-  total_wrong_count INTEGER DEFAULT 0,
-  understanding_level TEXT DEFAULT 'good',
-  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(student_id, lesson_id, concept)
-);
-
--- Create a function to update calculated fields
-CREATE OR REPLACE FUNCTION update_concept_understanding_fields()
-RETURNS TRIGGER AS $$
-BEGIN
-  -- Calculate total wrong count
-  NEW.total_wrong_count = NEW.wrong_multiple_choice_count + NEW.wrong_example_count;
-  
-  -- Calculate understanding level
-  IF NEW.total_wrong_count <= 2 THEN
-    NEW.understanding_level = 'good';
-  ELSIF NEW.total_wrong_count <= 4 THEN
-    NEW.understanding_level = 'moderate';
-  ELSE
-    NEW.understanding_level = 'bad';
-  END IF;
-  
-  -- Update timestamp
-  NEW.last_updated = NOW();
-  
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Create trigger to auto-calculate fields
-DROP TRIGGER IF EXISTS trigger_update_concept_understanding ON concept_understanding_tracking;
-CREATE TRIGGER trigger_update_concept_understanding
-  BEFORE INSERT OR UPDATE ON concept_understanding_tracking
-  FOR EACH ROW
-  EXECUTE FUNCTION update_concept_understanding_fields();
 
 -- ========================================
 -- DYNAMIC HINTS SYSTEM
@@ -272,6 +207,7 @@ CREATE INDEX IF NOT EXISTS idx_materials_processing_status ON materials(processi
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_student ON chat_sessions(student_id);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_lesson ON chat_sessions(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_started_at ON chat_sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
 
 -- Chat message indexes
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
@@ -280,26 +216,18 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_dynamic_hint ON chat_messages(dynam
 CREATE INDEX IF NOT EXISTS idx_chat_messages_content_type ON chat_messages ((content_json->>'type'));
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session_timestamp ON chat_messages (session_id, timestamp);
 
--- Student understanding indexes
-CREATE INDEX IF NOT EXISTS idx_understanding_student ON student_understanding(student_id);
-CREATE INDEX IF NOT EXISTS idx_understanding_lesson_concept ON student_understanding(lesson_id, concept);
-
 -- Concept progress indexes
 CREATE INDEX IF NOT EXISTS idx_concept_progress_session ON concept_progress(session_id);
 CREATE INDEX IF NOT EXISTS idx_concept_progress_concept ON concept_progress(concept);
 
--- Multiple choice attempts indexes
+-- Multiple choice attempts indexes - CRITICAL for teacher dashboard performance
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_session ON multiple_choice_attempts(session_id);
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_student ON multiple_choice_attempts(student_id);
+CREATE INDEX IF NOT EXISTS idx_mc_attempts_lesson ON multiple_choice_attempts(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_concept ON multiple_choice_attempts(concept);
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_created_at ON multiple_choice_attempts(created_at);
-
--- Concept understanding tracking indexes
-CREATE INDEX IF NOT EXISTS idx_concept_tracking_student ON concept_understanding_tracking(student_id);
-CREATE INDEX IF NOT EXISTS idx_concept_tracking_lesson ON concept_understanding_tracking(lesson_id);
-CREATE INDEX IF NOT EXISTS idx_concept_tracking_concept ON concept_understanding_tracking(concept);
-CREATE INDEX IF NOT EXISTS idx_concept_tracking_level ON concept_understanding_tracking(understanding_level);
-CREATE INDEX IF NOT EXISTS idx_concept_tracking_student_lesson ON concept_understanding_tracking(student_id, lesson_id);
+CREATE INDEX IF NOT EXISTS idx_mc_attempts_student_lesson ON multiple_choice_attempts(student_id, lesson_id);
+CREATE INDEX IF NOT EXISTS idx_mc_attempts_is_correct ON multiple_choice_attempts(is_correct);
 
 -- Dynamic hints indexes
 CREATE INDEX IF NOT EXISTS idx_dynamic_hints_session ON dynamic_hints(session_id);
@@ -309,48 +237,11 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_hints_concept ON dynamic_hints(concept);
 CREATE INDEX IF NOT EXISTS idx_dynamic_hints_created_at ON dynamic_hints(created_at);
 
 -- ========================================
--- USEFUL VIEWS (Optional - for analytics)
+-- USEFUL VIEWS FOR ANALYTICS
 -- ========================================
 
--- Student concept mastery view
-CREATE OR REPLACE VIEW student_concept_mastery AS
-SELECT 
-  s.student_id,
-  s.lesson_id,
-  cp.concept,
-  cp.phase,
-  cp.attempts,
-  cp.completed_at,
-  su.level as understanding_level,
-  l.topic as lesson_topic
-FROM chat_sessions s
-JOIN concept_progress cp ON cp.session_id = s.id
-LEFT JOIN student_understanding su ON 
-  su.student_id = s.student_id AND 
-  su.lesson_id = s.lesson_id AND 
-  su.concept = cp.concept
-JOIN lessons l ON l.id = s.lesson_id
-WHERE s.ended_at IS NOT NULL;
-
--- Teacher hint analytics view
-CREATE OR REPLACE VIEW teacher_hint_analytics AS
-SELECT 
-  dh.lesson_id,
-  dh.concept,
-  l.topic as lesson_topic,
-  l.title as lesson_title,
-  COUNT(*) as total_dynamic_hints,
-  COUNT(DISTINCT dh.student_id) as unique_students,
-  AVG(LENGTH(dh.student_answer)) as avg_answer_length,
-  AVG(LENGTH(dh.dynamic_hint)) as avg_hint_length,
-  MIN(dh.created_at) as first_hint_date,
-  MAX(dh.created_at) as latest_hint_date
-FROM dynamic_hints dh
-JOIN lessons l ON l.id = dh.lesson_id
-GROUP BY dh.lesson_id, dh.concept, l.topic, l.title;
-
--- Multiple choice analytics view
-CREATE OR REPLACE VIEW multiple_choice_analytics AS
+-- Teacher analytics view for multiple choice performance
+CREATE OR REPLACE VIEW teacher_multiple_choice_analytics AS
 SELECT 
   mca.lesson_id,
   mca.concept,
@@ -358,31 +249,101 @@ SELECT
   l.title as lesson_title,
   COUNT(*) as total_attempts,
   COUNT(DISTINCT mca.student_id) as unique_students,
-  SUM(CASE WHEN mca.is_correct THEN 1 ELSE 0 END) as correct_attempts,
-  SUM(CASE WHEN mca.is_correct THEN 0 ELSE 1 END) as incorrect_attempts,
+  COUNT(CASE WHEN mca.is_correct THEN 1 END) as correct_attempts,
+  COUNT(CASE WHEN NOT mca.is_correct THEN 1 END) as wrong_attempts,
   ROUND(
-    (SUM(CASE WHEN mca.is_correct THEN 1 ELSE 0 END)::DECIMAL / COUNT(*)) * 100, 
+    (COUNT(CASE WHEN mca.is_correct THEN 1 END)::DECIMAL / COUNT(*)) * 100, 
     2
   ) as success_rate,
-  AVG(mca.attempt_number) as avg_attempts_per_student,
-  MAX(mca.attempt_number) as max_attempts
+  MIN(mca.created_at) as first_attempt_date,
+  MAX(mca.created_at) as latest_attempt_date
 FROM multiple_choice_attempts mca
 JOIN lessons l ON l.id = mca.lesson_id
 GROUP BY mca.lesson_id, mca.concept, l.topic, l.title;
 
+-- Teacher session overview
+CREATE OR REPLACE VIEW teacher_session_overview AS
+SELECT 
+  cs.lesson_id,
+  l.title as lesson_title,
+  l.topic as lesson_topic,
+  COUNT(*) as total_sessions,
+  COUNT(CASE WHEN cs.status = 'completed' THEN 1 END) as completed_sessions,
+  COUNT(CASE WHEN cs.status = 'active' THEN 1 END) as active_sessions,
+  COUNT(CASE WHEN cs.status = 'abandoned' THEN 1 END) as abandoned_sessions,
+  COUNT(DISTINCT cs.student_id) as unique_students,
+  MIN(cs.started_at) as first_session_date,
+  MAX(cs.started_at) as latest_session_date
+FROM chat_sessions cs
+JOIN lessons l ON l.id = cs.lesson_id
+GROUP BY cs.lesson_id, l.title, l.topic;
+
 -- ========================================
--- INSERT SAMPLE DATA (Optional - for testing)
+-- BUSINESS LOGIC FUNCTIONS
 -- ========================================
 
--- Sample teacher
-INSERT INTO teachers (name, email) 
-VALUES ('Test Teacher', 'teacher@example.com') 
-ON CONFLICT (email) DO NOTHING;
+-- Validate teacher exists before creating course
+CREATE OR REPLACE FUNCTION validate_teacher_before_course_insert()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Check if teacher exists
+  IF NOT EXISTS (SELECT 1 FROM teachers WHERE id = NEW.teacher_id) THEN
+    RAISE EXCEPTION 'Teacher with id % does not exist', NEW.teacher_id;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- Sample student
-INSERT INTO students (name, email) 
-VALUES ('Test Student', 'student@example.com') 
-ON CONFLICT (email) DO NOTHING;
+-- Create trigger to validate teacher before course insert
+DROP TRIGGER IF EXISTS trigger_validate_teacher_before_course_insert ON courses;
+CREATE TRIGGER trigger_validate_teacher_before_course_insert
+  BEFORE INSERT ON courses
+  FOR EACH ROW
+  EXECUTE FUNCTION validate_teacher_before_course_insert();
+
+-- ========================================
+-- DEBUGGING AND MONITORING VIEWS
+-- ========================================
+
+-- Debug view for teacher-course relationships
+CREATE OR REPLACE VIEW debug_teacher_course_info AS
+SELECT 
+  t.id as teacher_id,
+  t.name as teacher_name,
+  t.email as teacher_email,
+  c.id as course_id,
+  c.title as course_title,
+  c.description as course_description,
+  c.created_at as course_created_at
+FROM teachers t
+LEFT JOIN courses c ON t.id = c.teacher_id
+ORDER BY t.name, c.title;
+
+-- ========================================
+-- DATA SOURCE DOCUMENTATION
+-- ========================================
+
+-- Document the primary data sources for teacher dashboard
+COMMENT ON TABLE chat_sessions IS 'PRIMARY SOURCE: Student session progress, completion status, and session state including questions and current progress';
+COMMENT ON TABLE multiple_choice_attempts IS 'PRIMARY SOURCE: Student answer attempts, accuracy, and wrong answer counts for understanding calculation';
+COMMENT ON TABLE chat_messages IS 'PRIMARY SOURCE: Detailed student-AI conversation history and content';
+COMMENT ON TABLE concept_progress IS 'SUPPLEMENTARY: Concept completion phases within sessions';
+COMMENT ON TABLE dynamic_hints IS 'SUPPLEMENTARY: AI-generated hints for struggling students';
+
+-- ========================================
+-- TEACHER DASHBOARD DATA CALCULATION NOTES
+-- ========================================
+
+-- The teacher dashboard now calculates all metrics directly from source data:
+-- 1. Session completion: FROM chat_sessions.status and chat_sessions.summary
+-- 2. Wrong answer counts: FROM multiple_choice_attempts WHERE is_correct = false
+-- 3. Understanding levels: CALCULATED from wrong answer counts (good ≤1, moderate ≤3, bad >3)
+-- 4. Progress percentages: CALCULATED from session.summary JSON (currentQuestionIndex/totalQuestions)
+-- 5. Concept tracking: DERIVED from multiple_choice_attempts grouped by student_id and concept
+
+-- This eliminates data synchronization issues and ensures teacher dashboard 
+-- always shows current, accurate student performance data.
 
 -- ===================================================================
 -- DEBUGGING & FIXES FOR FOREIGN KEY ISSUES
@@ -409,31 +370,6 @@ ON CONFLICT (id) DO UPDATE SET
 ALTER TABLE courses 
 ADD CONSTRAINT check_teacher_exists 
 CHECK (teacher_id IS NOT NULL);
-
--- Create a function to validate teacher_id before insert
-CREATE OR REPLACE FUNCTION validate_teacher_before_course_insert()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.teacher_id IS NULL THEN
-        RAISE EXCEPTION 'teacher_id cannot be NULL when creating a course';
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM teachers WHERE id = NEW.teacher_id) THEN
-        RAISE EXCEPTION 'teacher_id % does not exist in teachers table. Available teachers: %', 
-            NEW.teacher_id, 
-            (SELECT string_agg(id::text || ' (' || name || ')', ', ') FROM teachers LIMIT 5);
-    END IF;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Add trigger to validate teacher_id on course insert
-DROP TRIGGER IF EXISTS trigger_validate_teacher_before_course_insert ON courses;
-CREATE TRIGGER trigger_validate_teacher_before_course_insert
-    BEFORE INSERT ON courses
-    FOR EACH ROW
-    EXECUTE FUNCTION validate_teacher_before_course_insert();
 
 -- Create debugging queries for troubleshooting
 CREATE OR REPLACE VIEW debug_teacher_course_info AS

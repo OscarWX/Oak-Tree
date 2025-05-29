@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { CheckCircle, XCircle, BookOpen, Lightbulb, Trophy, ArrowRight, RotateCcw, Loader2, Send, MessageCircle } from "lucide-react"
+import { CheckCircle, XCircle, BookOpen, Lightbulb, Trophy, ArrowRight, RotateCcw, Loader2, Send, MessageCircle, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLesson } from "@/hooks/use-lesson"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -50,7 +50,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
   const [currentPhase, setCurrentPhase] = useState<'multiple_choice' | 'example'>('multiple_choice')
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [exampleText, setExampleText] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 })
   const [isComplete, setIsComplete] = useState(false)
@@ -69,27 +69,17 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [chatMessages])
 
-  // Start session when component mounts or lesson changes
+  // Initialize or resume session when component mounts
   useEffect(() => {
-    // Reset all state when lesson changes
-    setSessionId(null)
-    setCurrentQuestion(null)
-    setCurrentPhase('multiple_choice')
-    setSelectedOption(null)
-    setExampleText("")
-    setProgress({ current: 0, total: 0, percentage: 0 })
-    setIsComplete(false)
-    setChatMessages([])
-    setShowHint(false)
-    setDynamicHint("")
-    
-    // Start the session for this lesson
-    startLearningSession()
+    checkAndInitializeSession()
   }, [studentId, lessonId])
 
-  const startLearningSession = async () => {
+  const checkAndInitializeSession = async () => {
+    console.log(`Checking session for student ${studentId}, lesson ${lessonId}`)
     setIsLoading(true)
+    
     try {
+      // Always call the API - it will handle checking for existing sessions
       const response = await fetch("/api/chat/start", {
         method: "POST",
         headers: {
@@ -98,25 +88,53 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
         body: JSON.stringify({ studentId, lessonId }),
       })
 
-      const data = await response.json()
-
+      // Check if response is ok before trying to parse JSON
       if (!response.ok) {
-        if (data.chatNotAvailable) {
-          toast.error(data.error)
-          return
+        const text = await response.text()
+        console.error("API error response:", text)
+        
+        // Try to parse as JSON if possible
+        try {
+          const data = JSON.parse(text)
+          if (data.chatNotAvailable) {
+            toast.error(data.error)
+            setIsLoading(false)
+            return
+          }
+          throw new Error(data.error || "Failed to start learning session")
+        } catch (parseError) {
+          throw new Error(`Server error: ${response.status} ${response.statusText}`)
         }
-        throw new Error(data.error || "Failed to start learning session")
       }
 
+      const data = await response.json()
+
+      console.log(`Session state:`, { 
+        sessionId: data.sessionId, 
+        resumed: data.resumed,
+        currentPhase: data.currentPhase,
+        progress: data.progress,
+        isCompleted: data.isCompleted
+      })
+
+      // Set all session state
       setSessionId(data.sessionId)
       setCurrentQuestion(data.currentQuestion)
-      setCurrentPhase(data.currentPhase)
-      setProgress(data.progress)
+      setCurrentPhase(data.currentPhase || 'multiple_choice')
+      setProgress(data.progress || { current: 0, total: 0, percentage: 0 })
 
-      // If resuming session, load existing messages
+      // Check if session is complete (from API or progress)
+      if (data.isCompleted || data.currentPhase === 'completed' || 
+          (data.progress && data.progress.current === data.progress.total && data.progress.total > 0)) {
+        setIsComplete(true)
+      }
+
+      // Handle messages based on session state
       if (data.resumed) {
+        console.log(`Resuming existing session ${data.sessionId}`)
         await loadExistingMessages(data.sessionId)
-      } else {
+      } else if (!data.isCompleted) {
+        console.log(`Starting new session ${data.sessionId}`)
         // Add Chirpy's initial greeting for new sessions
         if (data.currentQuestion) {
           setChatMessages([{
@@ -130,14 +148,28 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       }
 
     } catch (error) {
-      console.error("Error starting session:", error)
-      toast.error(`Failed to start learning session: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      console.error("Error checking session:", error)
+      toast.error(`Failed to load session: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsLoading(false)
     }
   }
 
+  const resetSessionState = () => {
+    setSessionId(null)
+    setCurrentQuestion(null)
+    setCurrentPhase('multiple_choice')
+    setSelectedOption(null)
+    setExampleText("")
+    setProgress({ current: 0, total: 0, percentage: 0 })
+    setIsComplete(false)
+    setChatMessages([])
+    setShowHint(false)
+    setDynamicHint("")
+  }
+
   const loadExistingMessages = async (sessionId: string) => {
+    console.log(`Loading existing messages for session ${sessionId}`)
     try {
       const response = await fetch(`/api/chat-messages/session/${sessionId}`)
       if (!response.ok) throw new Error('Failed to load messages')
@@ -145,35 +177,107 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       const data = await response.json()
       const messages = data.messages || []
       
+      console.log(`Loaded ${messages.length} existing messages`)
+      
       // Convert stored messages to ChatMessage format
       const chatMessages: ChatMessage[] = messages.map((msg: any, index: number) => {
         let content = msg.content
         let options = undefined
+        let selectedOption = undefined
+        let isCorrect = undefined
         
         // Parse JSON content if it exists
-        if (msg.content_json || (typeof msg.content === 'string' && msg.content.startsWith('{'))) {
+        if (typeof msg.content === 'string' && msg.content.startsWith('{')) {
           try {
-            const jsonContent = msg.content_json || JSON.parse(msg.content)
-            content = jsonContent.message || jsonContent.content || content
-            options = jsonContent.options
+            const jsonContent = JSON.parse(msg.content)
+            
+            // Handle different message types
+            if (jsonContent.type === 'multiple_choice') {
+              content = jsonContent.message
+              options = jsonContent.options
+            } else if (jsonContent.type === 'multiple_choice_answer') {
+              // Student's multiple choice answer
+              const optionLetter = jsonContent.selectedOption?.toUpperCase() || ''
+              content = `Option ${optionLetter}`
+              selectedOption = jsonContent.selectedOption
+              isCorrect = jsonContent.isCorrect
+            } else if (jsonContent.type === 'example_submission') {
+              // Student's example submission
+              content = jsonContent.example
+            } else if (jsonContent.type === 'feedback') {
+              // Sage's feedback
+              content = jsonContent.message
+              isCorrect = jsonContent.isPositive
+            } else if (jsonContent.type === 'example_request') {
+              // Chirpy's example request
+              content = jsonContent.message
+            } else {
+              // Default to message or content field
+              content = jsonContent.message || jsonContent.content || msg.content
+              options = jsonContent.options
+            }
           } catch (e) {
-            // Use content as-is if parsing fails
+            // If parsing fails, check if it's Chirpy's final message
+            if (msg.sender_type === 'ai' && content.includes('Chirpy:')) {
+              // Remove "Chirpy: " prefix if it exists
+              content = content.replace(/^Chirpy:\s*/, '')
+            }
+            console.warn(`Failed to parse message content for message ${msg.id}:`, e)
           }
+        }
+        
+        // Determine message type based on sender
+        let messageType: 'chirpy' | 'student' | 'sage' = 'chirpy'
+        if (msg.sender_type === 'student') {
+          messageType = 'student'
+        } else if (msg.sender_type === 'ai') {
+          // Check if it's Sage based on content
+          if (typeof msg.content === 'string' && msg.content.includes('"type":"feedback"')) {
+            messageType = 'sage'
+          } else {
+            messageType = 'chirpy'
+          }
+        } else if (msg.sender_type === 'sage') {
+          messageType = 'sage'
         }
         
         return {
           id: msg.id || index.toString(),
-          type: msg.sender_type === 'ai' ? 'chirpy' : msg.sender_type === 'student' ? 'student' : 'sage',
+          type: messageType,
           content: content,
           options: options,
+          selectedOption: selectedOption,
+          isCorrect: isCorrect,
           timestamp: new Date(msg.timestamp)
         }
       })
       
+      console.log(`Converted messages:`, chatMessages.map(m => ({ 
+        type: m.type, 
+        hasOptions: !!m.options,
+        contentLength: m.content?.length || 0 
+      })))
+      
       setChatMessages(chatMessages)
+      
+      // Check for completion state after loading messages
+      if (chatMessages.length > 0) {
+        const lastMessages = chatMessages.slice(-5) // Check last 5 messages
+        const hasCompletionMessage = lastMessages.some(msg => 
+          msg.content.includes("Congratulations") || 
+          msg.content.includes("completed all the concepts") ||
+          msg.content.includes("Thank you so much for teaching me")
+        )
+        if (hasCompletionMessage) {
+          console.log("Session appears to be completed based on messages")
+          setIsComplete(true)
+        }
+      }
     } catch (error) {
       console.error("Error loading existing messages:", error)
       // Don't show error to user, just start fresh if loading fails
+      toast.warning("Could not load conversation history. Starting fresh.")
+      setChatMessages([])
     }
   }
 
@@ -373,13 +477,13 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
   }
 
   const cleanConversationHistory = async () => {
-    if (!confirm("Are you sure you want to reset all progress? This will delete your conversation history and understanding data for this lesson.")) {
+    if (!confirm("Are you sure you want to reset your progress? This will clear your conversation but keep the same questions.")) {
       return
     }
 
     setIsLoading(true)
     try {
-      const response = await fetch("/api/chat/clean", {
+      const response = await fetch("/api/chat/reset", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -390,31 +494,22 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to clean conversation history")
+        throw new Error(data.error || "Failed to reset conversation")
       }
 
       // Reset all state
-      setSessionId(null)
-      setCurrentQuestion(null)
-      setCurrentPhase('multiple_choice')
-      setSelectedOption(null)
-      setExampleText("")
-      setProgress({ current: 0, total: 0, percentage: 0 })
-      setIsComplete(false)
-      setChatMessages([])
-      setShowHint(false)
-      setDynamicHint("")
+      resetSessionState()
 
-      toast.success("Conversation history cleaned successfully! Starting fresh...")
+      toast.success("Conversation reset successfully! Starting over with the same questions...")
       
-      // Start a new session
+      // Reload the session to start fresh
       setTimeout(() => {
-        startLearningSession()
-      }, 1000)
+        checkAndInitializeSession()
+      }, 500)
 
     } catch (error) {
-      console.error("Error cleaning conversation history:", error)
-      toast.error(`Failed to clean conversation history: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      console.error("Error resetting conversation:", error)
+      toast.error(`Failed to reset conversation: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsLoading(false)
     }
@@ -442,7 +537,7 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
           <p className="text-muted-foreground mb-4">
             Please make sure the lesson has been properly set up with key concepts.
           </p>
-          <Button onClick={startLearningSession}>Try Again</Button>
+          <Button onClick={checkAndInitializeSession}>Try Again</Button>
         </div>
       </div>
     )
@@ -527,10 +622,10 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
                     disabled={isLoading || isSubmitting}
                     variant="outline"
                     size="sm"
-                    className="text-xs text-red-600 border-red-200 hover:bg-red-50"
+                    className="text-xs"
                   >
-                    <RotateCcw className="h-3 w-3 mr-1" />
-                    Reset Progress
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Restart with Same Questions
                   </Button>
                 </div>
               </div>
@@ -648,8 +743,8 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
                     variant="outline"
                     className="text-green-700 border-green-300 hover:bg-green-100"
                   >
-                    <RotateCcw className="h-4 w-4 mr-2" />
-                    Start Over
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Restart with Same Questions
                   </Button>
                 </CardContent>
               </Card>
