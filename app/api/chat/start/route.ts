@@ -27,20 +27,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Student ID and Lesson ID are required" }, { status: 400 })
     }
 
-    // Create a new chat session
-    const { data: sessionData, error: sessionError } = await supabaseAdmin
+    // Check for existing active session for this student and lesson
+    const { data: existingSession, error: existingError } = await supabaseAdmin
       .from("chat_sessions")
-      .insert({
-        student_id: studentId,
-        lesson_id: lessonId,
-        started_at: new Date().toISOString(),
-      })
-      .select()
+      .select("*")
+      .eq("student_id", studentId)
+      .eq("lesson_id", lessonId)
+      .eq("status", "active")
       .single()
 
-    if (sessionError) {
-      console.error("Error creating chat session:", sessionError)
-      return NextResponse.json({ error: sessionError.message }, { status: 500 })
+    let sessionData = existingSession
+
+    // If no existing session, create a new one
+    if (!existingSession || existingError) {
+      const { data: newSession, error: sessionError } = await supabaseAdmin
+        .from("chat_sessions")
+        .insert({
+          student_id: studentId,
+          lesson_id: lessonId,
+          started_at: new Date().toISOString(),
+          status: "active"
+        })
+        .select()
+        .single()
+
+      if (sessionError) {
+        console.error("Error creating chat session:", sessionError)
+        return NextResponse.json({ error: sessionError.message }, { status: 500 })
+      }
+
+      sessionData = newSession
     }
 
     // Get lesson details and key concepts
@@ -63,7 +79,36 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Get materials for additional context
+    // Parse existing session state or create new one
+    let sessionState: any
+    if (existingSession && existingSession.summary) {
+      try {
+        sessionState = JSON.parse(existingSession.summary)
+      } catch {
+        sessionState = null
+      }
+    }
+
+    // If resuming existing session with valid state
+    if (sessionState && sessionState.questions && sessionState.questions.length > 0) {
+      const currentQuestion = sessionState.questions[sessionState.currentQuestionIndex]
+      const progress = {
+        current: sessionState.currentQuestionIndex + 1,
+        total: sessionState.questions.length,
+        percentage: Math.round((sessionState.currentQuestionIndex / sessionState.questions.length) * 100)
+      }
+
+      return NextResponse.json({ 
+        success: true,
+        sessionId: sessionData.id,
+        currentQuestion: currentQuestion,
+        currentPhase: sessionState.currentPhase,
+        progress: progress,
+        resumed: true
+      })
+    }
+
+    // Generate new questions for new session
     const { data: materials, error: materialsError } = await supabaseAdmin
       .from("materials")
       .select("*")
@@ -169,7 +214,7 @@ Only return the JSON object, nothing else.`
     }
 
     // Save the session data with questions
-    const sessionState = {
+    sessionState = {
       questions,
       currentQuestionIndex: 0,
       currentPhase: 'multiple_choice' as 'multiple_choice' | 'example',
@@ -187,33 +232,36 @@ Only return the JSON object, nothing else.`
       console.error("Error updating session with questions:", updateError)
     }
 
-    // Save Chirpy's initial greeting as the first message
-    const firstQuestion = questions[0]
-    if (firstQuestion) {
-      await supabaseAdmin.from("chat_messages").insert({
-        session_id: sessionData.id,
-        sender_type: "ai",
-        content: JSON.stringify({
-          type: 'multiple_choice',
-          message: firstQuestion.multipleChoiceQuestion,
-          options: firstQuestion.options,
-          concept: firstQuestion.concept,
-          questionIndex: 0
-        }),
-        timestamp: new Date().toISOString()
-      })
+    // Save Chirpy's initial greeting as the first message (only if not resuming)
+    if (!existingSession) {
+      const firstQuestion = questions[0]
+      if (firstQuestion) {
+        await supabaseAdmin.from("chat_messages").insert({
+          session_id: sessionData.id,
+          sender_type: "ai",
+          content: JSON.stringify({
+            type: 'multiple_choice',
+            message: firstQuestion.multipleChoiceQuestion,
+            options: firstQuestion.options,
+            concept: firstQuestion.concept,
+            questionIndex: 0
+          }),
+          timestamp: new Date().toISOString()
+        })
+      }
     }
 
     return NextResponse.json({ 
       success: true,
       sessionId: sessionData.id,
-      currentQuestion: firstQuestion,
+      currentQuestion: questions[0],
       currentPhase: 'multiple_choice',
       progress: {
         current: 1,
         total: questions.length,
         percentage: 0
-      }
+      },
+      resumed: false
     })
   } catch (error: any) {
     console.error("Error starting chat session:", error)

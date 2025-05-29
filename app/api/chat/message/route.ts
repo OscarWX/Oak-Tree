@@ -108,6 +108,9 @@ export async function POST(request: NextRequest) {
         // Record good understanding
         await recordUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 4)
         
+        // Track concept understanding (correct multiple choice)
+        await trackConceptUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 'multiple_choice', true)
+        
         // Update concept progress
         await updateConceptProgress(sessionId, currentQuestion.concept, 'example')
 
@@ -179,6 +182,9 @@ export async function POST(request: NextRequest) {
 
         // Record needs improvement
         await recordUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 2)
+        
+        // Track concept understanding (wrong multiple choice)
+        await trackConceptUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 'multiple_choice', false)
         
         // Track multiple choice attempt
         await updateConceptProgress(sessionId, currentQuestion.concept, 'multiple_choice')
@@ -278,6 +284,9 @@ export async function POST(request: NextRequest) {
         // Record excellent understanding for providing example
         await recordUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 5)
         
+        // Track concept understanding (correct example)
+        await trackConceptUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 'example', true)
+        
         // Mark concept as completed
         await updateConceptProgress(sessionId, currentQuestion.concept, 'completed')
 
@@ -328,6 +337,9 @@ export async function POST(request: NextRequest) {
           hint: cleanHint,
           tryAgain: true
         }
+        
+        // Track concept understanding (wrong example)
+        await trackConceptUnderstanding(session.student_id, session.lesson_id, currentQuestion.concept, 'example', false)
       }
     } else {
       return NextResponse.json({ error: "Invalid answer type or phase mismatch" }, { status: 400 })
@@ -774,5 +786,39 @@ async function storeDynamicHintEnhanced(
   } catch (error) {
     console.error("Failed to store dynamic hint enhanced:", error)
     // Don't throw error - this is not critical for the main flow
+  }
+}
+
+// Track concept understanding
+async function trackConceptUnderstanding(
+  studentId: string,
+  lessonId: string,
+  concept: string,
+  answerType: 'multiple_choice' | 'example',
+  isCorrect: boolean
+) {
+  // Only track wrong answers
+  if (isCorrect) return
+
+  try {
+    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/concept-understanding`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        studentId,
+        lessonId,
+        concept,
+        answerType,
+        isCorrect,
+      }),
+    })
+
+    if (!response.ok) {
+      console.error('Failed to track concept understanding:', await response.text())
+    }
+  } catch (error) {
+    console.error('Error tracking concept understanding:', error)
   }
 }

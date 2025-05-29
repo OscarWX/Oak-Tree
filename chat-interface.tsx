@@ -69,8 +69,21 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [chatMessages])
 
-  // Start session when component mounts
+  // Start session when component mounts or lesson changes
   useEffect(() => {
+    // Reset all state when lesson changes
+    setSessionId(null)
+    setCurrentQuestion(null)
+    setCurrentPhase('multiple_choice')
+    setSelectedOption(null)
+    setExampleText("")
+    setProgress({ current: 0, total: 0, percentage: 0 })
+    setIsComplete(false)
+    setChatMessages([])
+    setShowHint(false)
+    setDynamicHint("")
+    
+    // Start the session for this lesson
     startLearningSession()
   }, [studentId, lessonId])
 
@@ -100,15 +113,20 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       setCurrentPhase(data.currentPhase)
       setProgress(data.progress)
 
-      // Add Chirpy's initial greeting
-      if (data.currentQuestion) {
-        setChatMessages([{
-          id: Date.now().toString(),
-          type: 'chirpy',
-          content: data.currentQuestion.multipleChoiceQuestion,
-          options: data.currentQuestion.options,
-          timestamp: new Date()
-        }])
+      // If resuming session, load existing messages
+      if (data.resumed) {
+        await loadExistingMessages(data.sessionId)
+      } else {
+        // Add Chirpy's initial greeting for new sessions
+        if (data.currentQuestion) {
+          setChatMessages([{
+            id: Date.now().toString(),
+            type: 'chirpy',
+            content: data.currentQuestion.multipleChoiceQuestion,
+            options: data.currentQuestion.options,
+            timestamp: new Date()
+          }])
+        }
       }
 
     } catch (error) {
@@ -116,6 +134,46 @@ export default function ChatInterface({ studentId, studentName, lessonId }: Chat
       toast.error(`Failed to start learning session: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const loadExistingMessages = async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/chat-messages/session/${sessionId}`)
+      if (!response.ok) throw new Error('Failed to load messages')
+      
+      const data = await response.json()
+      const messages = data.messages || []
+      
+      // Convert stored messages to ChatMessage format
+      const chatMessages: ChatMessage[] = messages.map((msg: any, index: number) => {
+        let content = msg.content
+        let options = undefined
+        
+        // Parse JSON content if it exists
+        if (msg.content_json || (typeof msg.content === 'string' && msg.content.startsWith('{'))) {
+          try {
+            const jsonContent = msg.content_json || JSON.parse(msg.content)
+            content = jsonContent.message || jsonContent.content || content
+            options = jsonContent.options
+          } catch (e) {
+            // Use content as-is if parsing fails
+          }
+        }
+        
+        return {
+          id: msg.id || index.toString(),
+          type: msg.sender_type === 'ai' ? 'chirpy' : msg.sender_type === 'student' ? 'student' : 'sage',
+          content: content,
+          options: options,
+          timestamp: new Date(msg.timestamp)
+        }
+      })
+      
+      setChatMessages(chatMessages)
+    } catch (error) {
+      console.error("Error loading existing messages:", error)
+      // Don't show error to user, just start fresh if loading fails
     }
   }
 

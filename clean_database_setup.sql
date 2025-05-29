@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   strengths JSONB,
   misunderstandings JSONB,
   summary TEXT,
-  session_state JSONB
+  session_state JSONB,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'paused'))
 );
 
 -- Chat messages table
@@ -179,6 +180,55 @@ CREATE TABLE IF NOT EXISTS multiple_choice_attempts (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(session_id, concept, attempt_number)
 );
+
+-- ========================================
+-- CONCEPT UNDERSTANDING TRACKING
+-- ========================================
+
+-- Track wrong answers per concept per student for understanding calculation
+CREATE TABLE IF NOT EXISTS concept_understanding_tracking (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID REFERENCES students(id) ON DELETE CASCADE,
+  lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
+  concept TEXT NOT NULL,
+  wrong_multiple_choice_count INTEGER DEFAULT 0,
+  wrong_example_count INTEGER DEFAULT 0,
+  total_wrong_count INTEGER DEFAULT 0,
+  understanding_level TEXT DEFAULT 'good',
+  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(student_id, lesson_id, concept)
+);
+
+-- Create a function to update calculated fields
+CREATE OR REPLACE FUNCTION update_concept_understanding_fields()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Calculate total wrong count
+  NEW.total_wrong_count = NEW.wrong_multiple_choice_count + NEW.wrong_example_count;
+  
+  -- Calculate understanding level
+  IF NEW.total_wrong_count <= 2 THEN
+    NEW.understanding_level = 'good';
+  ELSIF NEW.total_wrong_count <= 4 THEN
+    NEW.understanding_level = 'moderate';
+  ELSE
+    NEW.understanding_level = 'bad';
+  END IF;
+  
+  -- Update timestamp
+  NEW.last_updated = NOW();
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger to auto-calculate fields
+DROP TRIGGER IF EXISTS trigger_update_concept_understanding ON concept_understanding_tracking;
+CREATE TRIGGER trigger_update_concept_understanding
+  BEFORE INSERT OR UPDATE ON concept_understanding_tracking
+  FOR EACH ROW
+  EXECUTE FUNCTION update_concept_understanding_fields();
 
 -- ========================================
 -- DYNAMIC HINTS SYSTEM
@@ -243,6 +293,13 @@ CREATE INDEX IF NOT EXISTS idx_mc_attempts_session ON multiple_choice_attempts(s
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_student ON multiple_choice_attempts(student_id);
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_concept ON multiple_choice_attempts(concept);
 CREATE INDEX IF NOT EXISTS idx_mc_attempts_created_at ON multiple_choice_attempts(created_at);
+
+-- Concept understanding tracking indexes
+CREATE INDEX IF NOT EXISTS idx_concept_tracking_student ON concept_understanding_tracking(student_id);
+CREATE INDEX IF NOT EXISTS idx_concept_tracking_lesson ON concept_understanding_tracking(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_concept_tracking_concept ON concept_understanding_tracking(concept);
+CREATE INDEX IF NOT EXISTS idx_concept_tracking_level ON concept_understanding_tracking(understanding_level);
+CREATE INDEX IF NOT EXISTS idx_concept_tracking_student_lesson ON concept_understanding_tracking(student_id, lesson_id);
 
 -- Dynamic hints indexes
 CREATE INDEX IF NOT EXISTS idx_dynamic_hints_session ON dynamic_hints(session_id);
@@ -452,3 +509,18 @@ ADD COLUMN IF NOT EXISTS raw_ai_summary TEXT;
 
 Your testing database is ready! 🚀
 */ 
+
+-- Update existing chat_sessions table to add status column if it doesn't exist
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'chat_sessions' AND column_name = 'status') THEN
+        ALTER TABLE chat_sessions ADD COLUMN status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'paused'));
+        
+        -- Update existing sessions without status to 'completed' if they have end_date, 'active' otherwise
+        UPDATE chat_sessions SET status = CASE 
+            WHEN ended_at IS NOT NULL THEN 'completed'
+            ELSE 'active'
+        END;
+    END IF;
+END $$; 

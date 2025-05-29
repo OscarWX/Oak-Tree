@@ -154,6 +154,7 @@ export async function POST(request: NextRequest) {
         strengths: analysis.strengths,
         misunderstandings: analysis.misunderstandings,
         summary: analysis.summary,
+        status: "completed"
       })
       .eq("id", sessionId)
       .select()
