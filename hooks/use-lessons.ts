@@ -9,17 +9,12 @@ export function useLessons(courseId?: string) {
   const [error, setError] = useState<string | null>(null)
 
   const fetchLessons = useCallback(async () => {
-    if (!courseId) {
-      setLessons([])
-      setIsLoading(false)
-      return
-    }
-
     try {
       setIsLoading(true)
       setError(null)
 
-      const response = await fetch(`/api/lessons?courseId=${courseId}`)
+      const url = courseId ? `/api/lessons?courseId=${courseId}` : '/api/lessons'
+      const response = await fetch(url)
       const data = await response.json()
 
       if (!response.ok) {

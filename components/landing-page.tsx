@@ -1,15 +1,21 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { GraduationCap, BookOpen, TreesIcon as Tree } from "lucide-react"
 
-interface LandingPageProps {
-  onRoleSelect: (role: "student" | "teacher") => void
-}
-
-export default function LandingPage({ onRoleSelect }: LandingPageProps) {
+export default function LandingPage() {
   const [hoveredRole, setHoveredRole] = useState<"student" | "teacher" | null>(null)
+  const router = useRouter()
+
+  const handleRoleSelect = (role: "student" | "teacher") => {
+    if (role === "teacher") {
+      router.push("/teacher")
+    } else {
+      router.push("/student")
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -54,7 +60,7 @@ export default function LandingPage({ onRoleSelect }: LandingPageProps) {
               <Button
                 size="lg"
                 className="w-full bg-green-600 hover:bg-green-700"
-                onClick={() => onRoleSelect("student")}
+                onClick={() => handleRoleSelect("student")}
               >
                 Continue as Student
               </Button>
@@ -80,7 +86,7 @@ export default function LandingPage({ onRoleSelect }: LandingPageProps) {
               <Button
                 size="lg"
                 className="w-full bg-green-600 hover:bg-green-700"
-                onClick={() => onRoleSelect("teacher")}
+                onClick={() => handleRoleSelect("teacher")}
               >
                 Continue as Teacher
               </Button>
